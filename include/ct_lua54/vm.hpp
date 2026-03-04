@@ -375,6 +375,20 @@ struct VM {
   static constexpr Multi nf_math_sqrt(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_log(VM& vm, const Value* a, std::size_t n);
 
+  // --- string module ---
+  static constexpr Multi nf_string_len(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_sub(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_find(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_match(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_gsub(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_byte(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_char(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_upper(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_lower(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_rep(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_reverse(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_format(VM& vm, const Value* a, std::size_t n);
+
   std::uint32_t id_next{0};
 
   // call / eval / exec
@@ -419,11 +433,13 @@ struct VM {
   static constexpr std::uint32_t LIB_API  = 1u << 1;
   static constexpr std::uint32_t LIB_TABLE= 1u << 2;
   static constexpr std::uint32_t LIB_MATH = 1u << 3;
-  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH;
+  static constexpr std::uint32_t LIB_STRING = 1u << 4;
+  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH | LIB_STRING;
 
   consteval void open_base();
   consteval void open_table();
   consteval void open_math();
+  consteval void open_string();
   consteval void open_api();
   consteval void init(std::uint32_t libs);
   consteval void init() { init(LIB_BASE); }
@@ -983,6 +999,7 @@ consteval void VM::init(std::uint32_t libs) {
   if (libs & LIB_BASE) open_base();
   if (libs & LIB_TABLE) open_table();
   if (libs & LIB_MATH) open_math();
+  if (libs & LIB_STRING) open_string();
   if (libs & LIB_API)  open_api();
 }
 
@@ -1016,6 +1033,7 @@ inline constexpr std::uint32_t LIB_BASE = VM::LIB_BASE;
 inline constexpr std::uint32_t LIB_API  = VM::LIB_API;
 inline constexpr std::uint32_t LIB_TABLE= VM::LIB_TABLE;
 inline constexpr std::uint32_t LIB_MATH = VM::LIB_MATH;
+inline constexpr std::uint32_t LIB_STRING = VM::LIB_STRING;
 inline constexpr std::uint32_t LIB_ALL  = VM::LIB_ALL;
 
 } // namespace ct_lua54

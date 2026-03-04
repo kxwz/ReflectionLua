@@ -5,5 +5,6 @@
 #include "include/ct_lua54/modules/base_lib.hpp"
 #include "include/ct_lua54/modules/table_lib.hpp"
 #include "include/ct_lua54/modules/math_lib.hpp"
+#include "include/ct_lua54/modules/string_lib.hpp"
 #include "include/ct_lua54/modules/api_lib.hpp"
 #include "include/ct_lua54/demo_main.hpp"
