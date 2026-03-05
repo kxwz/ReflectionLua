@@ -21,6 +21,14 @@ if "%~1"=="" (
     "%ROOT%include\ct_lua54\modules\math_lib.hpp"
     "%ROOT%include\ct_lua54\modules\string_lib.hpp"
     "%ROOT%include\ct_lua54\modules\api_lib.hpp"
+    "%ROOT%include\ct_lua54\examples\core_example.hpp"
+    "%ROOT%include\ct_lua54\examples\expr_example.hpp"
+    "%ROOT%include\ct_lua54\examples\flow_example.hpp"
+    "%ROOT%include\ct_lua54\examples\meta_example.hpp"
+    "%ROOT%include\ct_lua54\examples\table_example.hpp"
+    "%ROOT%include\ct_lua54\examples\math_example.hpp"
+    "%ROOT%include\ct_lua54\examples\string_example.hpp"
+    "%ROOT%include\ct_lua54\examples\all_example.hpp"
     "%ROOT%include\ct_lua54\demo_main.hpp"
   ) do (
     rem Exclude header-only directive that breaks single-file compile with -Werror.

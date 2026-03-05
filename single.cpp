@@ -3502,14 +3502,18 @@ consteval void VM::open_api() {
 } // namespace ct_lua54
 
 
+namespace ct_lua54::examples {
 
-// ---------------- demo ----------------
-int main() {
-  // no libs selected: core language still works
-  constexpr double r_core = ct_lua54::run_number<fixed_string{R"lua(return 1)lua"}, 0u>();
+inline constexpr double r_core = ct_lua54::run_number<fixed_string{R"lua(return 1)lua"}, 0u>();
+static_assert(r_core == 1.0, "core example failed");
 
-  // split tests to stay below clang constexpr per-expression step budget
-  constexpr double r_expr = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_expr = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3575,9 +3579,16 @@ EQ(0 and 9, 9, "truthy 0")
 EQ(not nil, true, "not")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE>();
+)lua"}, ct_lua54::LIB_BASE>();
+static_assert(r_expr == 1.0, "expr example failed");
 
-  constexpr double r_flow = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_flow = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3657,9 +3668,16 @@ n = n + 2
 EQ(n, 2, "goto branch")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE>();
+)lua"}, ct_lua54::LIB_BASE>();
+static_assert(r_flow == 1.0, "flow example failed");
 
-  constexpr double r_meta = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_meta = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3701,9 +3719,16 @@ rawset(ptab, "q", 8)
 EQ(rawget(ptab, "q"), 8, "rawget/rawset")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE>();
+)lua"}, ct_lua54::LIB_BASE>();
+static_assert(r_meta == 1.0, "meta example failed");
 
-  constexpr double r_table = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_table = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3753,9 +3778,16 @@ EQ(ov[2], 1, "move overlap 2")
 EQ(ov[4], 3, "move overlap 4")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_TABLE>();
+)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_TABLE>();
+static_assert(r_table == 1.0, "table example failed");
 
-  constexpr double r_math = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_math = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3795,9 +3827,16 @@ EQ(i1, i2, "randomseed int repeat")
 EQ(j1, j2, "randomseed int2 repeat")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+static_assert(r_math == 1.0, "math example failed");
 
-  constexpr double r_string = ct_lua54::run_number<fixed_string{R"lua(
+} // namespace ct_lua54::examples
+
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_string = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -3835,21 +3874,36 @@ EQ(string.format("x=%d y=%.2f %s %%", 7, 2.5, "ok"), "x=7 y=2.50 ok %", "string.
 EQ(("abc"):upper(), "ABC", "string metatable index")
 
 return 1
-  )lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_STRING>();
+)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_STRING>();
+static_assert(r_string == 1.0, "string example failed");
 
-  // base + api lib mask (api is currently empty, but selection path is exercised)
-  constexpr double r_all = ct_lua54::run_number<
-    fixed_string{R"lua(return type(1) == "number" and 1 or 0)lua"},
-    ct_lua54::LIB_ALL
-  >();
+} // namespace ct_lua54::examples
 
-  std::cout << "lua result (core) = " << r_core << "\n";
-  std::cout << "lua result (base expr) = " << r_expr << "\n";
-  std::cout << "lua result (base flow) = " << r_flow << "\n";
-  std::cout << "lua result (base meta) = " << r_meta << "\n";
-  std::cout << "lua result (base+table) = " << r_table << "\n";
-  std::cout << "lua result (base+math) = " << r_math << "\n";
-  std::cout << "lua result (base+string) = " << r_string << "\n";
-  std::cout << "lua result (all) = " << r_all << "\n";
-}
+
+
+namespace ct_lua54::examples {
+
+inline constexpr double r_all = ct_lua54::run_number<
+  fixed_string{R"lua(return type(1) == "number" and 1 or 0)lua"},
+  ct_lua54::LIB_ALL
+>();
+static_assert(r_all == 1.0, "all-libs example failed");
+
+} // namespace ct_lua54::examples
+
+
+
+// All example checks are in include/ct_lua54/examples/*.hpp.
+// Keep aggregate asserts here so a missing include/order issue fails clearly.
+static_assert(ct_lua54::examples::r_core == 1.0, "core aggregate check failed");
+static_assert(ct_lua54::examples::r_expr == 1.0, "expr aggregate check failed");
+static_assert(ct_lua54::examples::r_flow == 1.0, "flow aggregate check failed");
+static_assert(ct_lua54::examples::r_meta == 1.0, "meta aggregate check failed");
+static_assert(ct_lua54::examples::r_table == 1.0, "table aggregate check failed");
+static_assert(ct_lua54::examples::r_math == 1.0, "math aggregate check failed");
+static_assert(ct_lua54::examples::r_string == 1.0, "string aggregate check failed");
+static_assert(ct_lua54::examples::r_all == 1.0, "all aggregate check failed");
+
+int main() { return 0; }
+
 
