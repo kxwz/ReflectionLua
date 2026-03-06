@@ -40,6 +40,7 @@ struct VM {
   std::array<char, MAX_PRINT_BYTES> print_buf{};
   std::size_t print_n{0};
   bool print_truncated{false};
+  bool warn_enabled{true};
 
   static constexpr bool is_number(const Value& v){ return v.tag==Tag::Int || v.tag==Tag::Num; }
   static constexpr double to_num(const Value& v){
@@ -477,6 +478,13 @@ struct VM {
 
   // --- base natives ---
   static constexpr Multi nf_print(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_assert(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_error(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_pcall(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_xpcall(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_warn(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_rawequal(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_rawlen(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_tostring(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_type(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_setmetatable(VM& vm, const Value* a, std::size_t n);
@@ -485,6 +493,10 @@ struct VM {
   static constexpr Multi nf_rawset(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_next(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_pairs(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_ipairs(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_ipairs_iter(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_select(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_tonumber(VM& vm, const Value* a, std::size_t n);
 
   // --- table module ---
   static constexpr Multi nf_table_insert(VM& vm, const Value* a, std::size_t n);
@@ -543,6 +555,7 @@ struct VM {
   static constexpr Multi nf_utf8_offset(VM& vm, const Value* a, std::size_t n);
 
   std::uint32_t id_next{0};
+  std::uint32_t id_ipairs_iter{0};
   std::uint32_t id_utf8_codes_iter{0};
 
   // call / eval / exec

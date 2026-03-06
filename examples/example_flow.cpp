@@ -102,12 +102,13 @@ EQ(n, 2, "goto branch")
 
 local ok = 0
 do
-  goto out_ok
   local hidden = 7
+  goto out_ok
   ok = hidden
   ::out_ok::
+  ok = ok + hidden
 end
-EQ(ok, 0, "goto skips inner local scope safely")
+EQ(ok, 7, "goto with local in scope")
 
 return 1
 )lua"}, ct_lua54::LIB_BASE>();
