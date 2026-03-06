@@ -1,18 +1,7 @@
-#include "include/ct_lua54/preamble.hpp"
-#include "include/ct_lua54/core_types.hpp"
-#include "include/ct_lua54/lexer_parser.hpp"
-#include "include/ct_lua54/vm.hpp"
-#include "include/ct_lua54/modules/base_lib.hpp"
-#include "include/ct_lua54/modules/table_lib.hpp"
-#include "include/ct_lua54/modules/math_lib.hpp"
-#include "include/ct_lua54/modules/string_lib.hpp"
-#include "include/ct_lua54/modules/api_lib.hpp"
-#include "include/ct_lua54/examples/core_example.hpp"
-#include "include/ct_lua54/examples/expr_example.hpp"
-#include "include/ct_lua54/examples/flow_example.hpp"
-#include "include/ct_lua54/examples/meta_example.hpp"
-#include "include/ct_lua54/examples/table_example.hpp"
-#include "include/ct_lua54/examples/math_example.hpp"
-#include "include/ct_lua54/examples/string_example.hpp"
-#include "include/ct_lua54/examples/all_example.hpp"
-#include "include/ct_lua54/demo_main.hpp"
+#include "ct_lua54.hpp"
+
+constexpr double r_smoke = ct_lua54::run_number<fixed_string{R"lua(return 1)lua"}, ct_lua54::LIB_BASE>();
+static_assert(r_smoke == 1.0, "library smoke test failed");
+
+int main() { return 0; }
+

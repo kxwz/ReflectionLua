@@ -369,6 +369,17 @@ struct VM {
   static constexpr Multi nf_math_max(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_random(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_randomseed(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_acos(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_asin(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_atan(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_deg(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_rad(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_exp(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_fmod(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_modf(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_tointeger(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_type(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_math_ult(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_sin(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_cos(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_math_tan(VM& vm, const Value* a, std::size_t n);

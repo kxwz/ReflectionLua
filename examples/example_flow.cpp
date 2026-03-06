@@ -1,8 +1,6 @@
-#pragma once
+#include "ct_lua54.hpp"
 
-namespace ct_lua54::examples {
-
-inline constexpr double r_flow = ct_lua54::run_number<fixed_string{R"lua(
+constexpr double r_flow = ct_lua54::run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -83,7 +81,9 @@ EQ(n, 2, "goto branch")
 
 return 1
 )lua"}, ct_lua54::LIB_BASE>();
+
 static_assert(r_flow == 1.0, "flow example failed");
 
-} // namespace ct_lua54::examples
+int main() { return 0; }
+
 
