@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <concepts>
 #include <initializer_list>
 #include <iostream>
 #include <string_view>

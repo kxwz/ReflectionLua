@@ -1,5 +1,20 @@
 #pragma once
 
+template <class T>
+concept native_arg_type =
+  std::same_as<std::remove_cvref_t<T>, double> ||
+  std::same_as<std::remove_cvref_t<T>, bool> ||
+  std::same_as<std::remove_cvref_t<T>, std::int64_t> ||
+  std::same_as<std::remove_cvref_t<T>, Value>;
+
+template <class T>
+concept native_ret_type =
+  std::same_as<std::remove_cvref_t<T>, void> ||
+  std::same_as<std::remove_cvref_t<T>, double> ||
+  std::same_as<std::remove_cvref_t<T>, bool> ||
+  std::same_as<std::remove_cvref_t<T>, std::int64_t> ||
+  std::same_as<std::remove_cvref_t<T>, Value>;
+
 // ---------------- VM ----------------
 struct VM {
   Heap H{};
@@ -302,18 +317,41 @@ struct VM {
   struct fn_traits<R(Args...)> { using ret=R; using args_tuple=std::tuple<Args...>; static constexpr std::size_t arity=sizeof...(Args); };
 
   template <class T>
-  static constexpr T arg_as(VM&, const Value& v) {
-    if constexpr (std::is_same_v<T,double>) return to_num(v);
-    else if constexpr (std::is_same_v<T,bool>) { if (v.tag!=Tag::Bool) throw "Lua: expected boolean"; return v.b; }
-    else throw "Lua: unsupported native arg type";
+    requires native_arg_type<T>
+  static constexpr std::remove_cvref_t<T> arg_as(VM&, const Value& v) {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (std::same_as<U, double>) return to_num(v);
+    else if constexpr (std::same_as<U, bool>) {
+      if (v.tag!=Tag::Bool) throw "Lua: expected boolean";
+      return v.b;
+    } else if constexpr (std::same_as<U, std::int64_t>) {
+      return to_int(v);
+    } else {
+      return v;
+    }
   }
 
   template <class R>
+    requires (native_ret_type<R> && !std::same_as<std::remove_cvref_t<R>, void>)
   static constexpr Multi ret_as(VM&, R r) {
-    if constexpr (std::is_void_v<R>) return Multi::none();
-    else if constexpr (std::is_same_v<R,double>) return Multi::one(Value::number(r));
-    else if constexpr (std::is_same_v<R,bool>) return Multi::one(Value::boolean(r));
-    else throw "Lua: unsupported native return";
+    using U = std::remove_cvref_t<R>;
+    if constexpr (std::same_as<U, double>) return Multi::one(Value::number((double)r));
+    else if constexpr (std::same_as<U, bool>) return Multi::one(Value::boolean((bool)r));
+    else if constexpr (std::same_as<U, std::int64_t>) return Multi::one(Value::integer((std::int64_t)r));
+    else return Multi::one((Value)r);
+  }
+
+  template <meta::info F, class Tr, class R, std::size_t... Is>
+  static constexpr Multi call_wrapped_impl(VM& vm, const Value* args, std::index_sequence<Is...>) {
+    static_assert((native_arg_type<std::tuple_element_t<Is, typename Tr::args_tuple>> && ...),
+      "Lua: unsupported native arg type");
+    if constexpr (std::is_void_v<R>) {
+      [:F:]( arg_as<std::tuple_element_t<Is, typename Tr::args_tuple>>(vm, args[Is])... );
+      return Multi::none();
+    } else {
+      R r = [:F:]( arg_as<std::tuple_element_t<Is, typename Tr::args_tuple>>(vm, args[Is])... );
+      return ret_as<R>(vm, r);
+    }
   }
 
   template <meta::info F>
@@ -322,17 +360,9 @@ struct VM {
     using FnType = std::remove_reference_t<FnRef>;
     using Tr     = fn_traits<FnType>;
     using R      = typename Tr::ret;
+    static_assert(native_ret_type<R>, "Lua: unsupported native return");
     if (argc != Tr::arity) throw "Lua: arity mismatch (native)";
-    auto inv = [&]<std::size_t...Is>(std::index_sequence<Is...>) -> Multi {
-      if constexpr (std::is_void_v<R>) {
-        [:F:]( arg_as<std::tuple_element_t<Is, typename Tr::args_tuple>>(vm, args[Is])... );
-        return Multi::none();
-      } else {
-        R r = [:F:]( arg_as<std::tuple_element_t<Is, typename Tr::args_tuple>>(vm, args[Is])... );
-        return ret_as<R>(vm, r);
-      }
-    };
-    return inv(std::make_index_sequence<Tr::arity>{});
+    return call_wrapped_impl<F, Tr, R>(vm, args, std::make_index_sequence<Tr::arity>{});
   }
 
   constexpr std::uint32_t reg_native(std::string_view name, NativeFn f) {

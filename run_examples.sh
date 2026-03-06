@@ -26,7 +26,7 @@ if [[ -n "${CXXFLAGS:-}" ]]; then
 else
   case "${CXX}" in
     g++*|*/g++*)
-      FLAGS=(-std=gnu++2c -O2 -I"${ROOT_DIR}/include")
+      FLAGS=(-std=gnu++2c -freflection -O2 -I"${ROOT_DIR}/include")
       ;;
     *)
       FLAGS=(-std=c++2c -O2 -I"${ROOT_DIR}/include")

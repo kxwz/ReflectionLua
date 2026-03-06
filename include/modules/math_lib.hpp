@@ -159,6 +159,17 @@ namespace math_detail {
   }
 }
 
+template <class Fn>
+concept math_unary_fn = requires(Fn fn, double x) {
+  { fn(x) } -> std::convertible_to<double>;
+};
+
+template <math_unary_fn Fn>
+constexpr Multi math_unary_real(const Value* a, std::size_t n, const char* sig, Fn&& fn) {
+  if (n<1) throw sig;
+  return Multi::one(Value::number(fn(VM::to_num(a[0]))));
+}
+
 constexpr Multi VM::nf_math_floor(VM&, const Value* a, std::size_t n) {
   if (n<1) throw "Lua: math.floor(x)";
   if (a[0].tag==Tag::Int) return Multi::one(a[0]);
@@ -241,13 +252,11 @@ constexpr Multi VM::nf_math_randomseed(VM& vm, const Value* a, std::size_t n) {
 }
 
 constexpr Multi VM::nf_math_acos(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.acos(x)";
-  return Multi::one(Value::number(math_detail::acosd(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.acos(x)",[](double x) constexpr { return math_detail::acosd(x); });
 }
 
 constexpr Multi VM::nf_math_asin(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.asin(x)";
-  return Multi::one(Value::number(math_detail::asind(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.asin(x)",[](double x) constexpr { return math_detail::asind(x); });
 }
 
 constexpr Multi VM::nf_math_atan(VM&, const Value* a, std::size_t n) {
@@ -258,18 +267,15 @@ constexpr Multi VM::nf_math_atan(VM&, const Value* a, std::size_t n) {
 }
 
 constexpr Multi VM::nf_math_deg(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.deg(x)";
-  return Multi::one(Value::number(to_num(a[0]) * (180.0 / math_detail::k_pi)));
+  return math_unary_real(a,n,"Lua: math.deg(x)",[](double x) constexpr { return x * (180.0 / math_detail::k_pi); });
 }
 
 constexpr Multi VM::nf_math_rad(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.rad(x)";
-  return Multi::one(Value::number(to_num(a[0]) * (math_detail::k_pi / 180.0)));
+  return math_unary_real(a,n,"Lua: math.rad(x)",[](double x) constexpr { return x * (math_detail::k_pi / 180.0); });
 }
 
 constexpr Multi VM::nf_math_exp(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.exp(x)";
-  return Multi::one(Value::number(exp_num(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.exp(x)",[](double x) constexpr { return VM::exp_num(x); });
 }
 
 constexpr Multi VM::nf_math_fmod(VM&, const Value* a, std::size_t n) {
@@ -326,23 +332,19 @@ constexpr Multi VM::nf_math_ult(VM&, const Value* a, std::size_t n) {
 }
 
 constexpr Multi VM::nf_math_sin(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.sin(x)";
-  return Multi::one(Value::number(math_detail::sind(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.sin(x)",[](double x) constexpr { return math_detail::sind(x); });
 }
 
 constexpr Multi VM::nf_math_cos(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.cos(x)";
-  return Multi::one(Value::number(math_detail::cosd(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.cos(x)",[](double x) constexpr { return math_detail::cosd(x); });
 }
 
 constexpr Multi VM::nf_math_tan(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.tan(x)";
-  return Multi::one(Value::number(math_detail::tand(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.tan(x)",[](double x) constexpr { return math_detail::tand(x); });
 }
 
 constexpr Multi VM::nf_math_sqrt(VM&, const Value* a, std::size_t n) {
-  if (n<1) throw "Lua: math.sqrt(x)";
-  return Multi::one(Value::number(math_detail::sqrtd(to_num(a[0]))));
+  return math_unary_real(a,n,"Lua: math.sqrt(x)",[](double x) constexpr { return math_detail::sqrtd(x); });
 }
 
 constexpr Multi VM::nf_math_log(VM&, const Value* a, std::size_t n) {
