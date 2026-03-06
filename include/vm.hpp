@@ -28,7 +28,8 @@ struct VM {
 
   // metanames
   StrId s__index{}, s__newindex{}, s__call{}, s__add{}, s__sub{}, s__mul{}, s__div{}, s__idiv{}, s__mod{}, s__pow{};
-  StrId s__unm{}, s__len{}, s__concat{}, s__eq{}, s__lt{}, s__le{};
+  StrId s__unm{}, s__len{}, s__concat{}, s__eq{}, s__lt{}, s__le{}, s__pairs{}, s__tostring{};
+  StrId s__band{}, s__bor{}, s__bxor{}, s__shl{}, s__shr{}, s__bnot{};
 
   std::size_t steps{0};
   constexpr void tick(){ if (++steps > STEP_LIMIT) throw "Lua: step limit exceeded"; }
@@ -55,6 +56,12 @@ struct VM {
       return i;
     }
     throw "Lua: expected integer";
+  }
+
+  static constexpr bool to_int_maybe(const Value& v, std::int64_t& out){
+    if (v.tag==Tag::Int) { out=v.i; return true; }
+    if (v.tag==Tag::Num) return as_exact_i64(v.n, out);
+    return false;
   }
 
   static constexpr double floor_num(double x){
@@ -210,6 +217,12 @@ struct VM {
     throw err;
   }
 
+  constexpr Value meta_un(const Value& a, StrId mm, const char* err){
+    Value mmv=rawget_mt(metatable_of(a),mm);
+    if (!mmv.is_nil()) { tmp_args[0]=a; return first(call_value(mmv,tmp_args.data(),1)); }
+    throw err;
+  }
+
   constexpr bool v_eq(const Value& a, const Value& b){
     if (a.tag!=b.tag) {
       if (a.tag==Tag::Int && b.tag==Tag::Num) return (double)a.i==b.n;
@@ -277,6 +290,28 @@ struct VM {
     double frac=x-(double)iv; if (frac<0) frac=-frac;
     for (int k=0;k<6;++k){ frac*=10.0; int d=(int)frac; frac-=d; buf[w++]=char('0'+d); }
     return H.sp.intern(std::string_view(buf.data(), w));
+  }
+
+  constexpr StrId value_tostring(const Value& v){
+    Value mmv=rawget_mt(metatable_of(v), s__tostring);
+    if (!mmv.is_nil()) {
+      tmp_args[0]=v;
+      Value rv=first(call_value(mmv,tmp_args.data(),1));
+      if (rv.tag!=Tag::Str) throw "Lua: '__tostring' must return a string";
+      return rv.s;
+    }
+
+    switch (v.tag) {
+      case Tag::Nil:   return H.sp.intern("nil");
+      case Tag::Bool:  return H.sp.intern(v.b ? "true" : "false");
+      case Tag::Int:   return int_to_string(v.i);
+      case Tag::Num:   return num_to_string(v.n);
+      case Tag::Str:   return v.s;
+      case Tag::Table: return H.sp.intern("table");
+      case Tag::Func:  return H.sp.intern("function");
+      case Tag::UData: return H.sp.intern("userdata");
+    }
+    throw "Lua: bad value tag";
   }
 
   constexpr Value v_concat(const Value& a, const Value& b){
@@ -374,6 +409,8 @@ struct VM {
   constexpr Value mk_native(std::uint32_t id){ return Value::func_native(id); }
 
   // --- base natives ---
+  static constexpr Multi nf_print(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_tostring(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_type(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_setmetatable(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_getmetatable(VM& vm, const Value* a, std::size_t n);
@@ -564,7 +601,11 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
         if (x.tag==Tag::Num) return Multi::one(Value::number(-x.n));
         return Multi::one(meta_bin(x,Value::nil(),s__unm,"Lua: unary minus"));
       }
-      if (e.op==TK::BitXor) return Multi::one(Value::integer(bit_not(to_int(x))));
+      if (e.op==TK::BitXor) {
+        std::int64_t xi=0;
+        if (to_int_maybe(x, xi)) return Multi::one(Value::integer(bit_not(xi)));
+        return Multi::one(meta_un(x,s__bnot,"Lua: bitwise not"));
+      }
       if (e.op==TK::Len) return Multi::one(v_len(x));
       throw "Lua: bad unary";
     }
@@ -626,16 +667,31 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
             return Multi::one(Value::number(av - floor_num(av/bv)*bv));
           }
           return Multi::one(meta_bin(a,b,s__mod,"Lua: mod"));
-        case TK::BitAnd:
-          return Multi::one(Value::integer(bit_and(to_int(a),to_int(b))));
-        case TK::BitOr:
-          return Multi::one(Value::integer(bit_or(to_int(a),to_int(b))));
-        case TK::BitXor:
-          return Multi::one(Value::integer(bit_xor(to_int(a),to_int(b))));
-        case TK::Shl:
-          return Multi::one(Value::integer(shift_left(to_int(a),to_int(b))));
-        case TK::Shr:
-          return Multi::one(Value::integer(shift_right(to_int(a),to_int(b))));
+        case TK::BitAnd: {
+          std::int64_t ai=0, bi=0;
+          if (to_int_maybe(a, ai) && to_int_maybe(b, bi)) return Multi::one(Value::integer(bit_and(ai,bi)));
+          return Multi::one(meta_bin(a,b,s__band,"Lua: bitwise and"));
+        }
+        case TK::BitOr: {
+          std::int64_t ai=0, bi=0;
+          if (to_int_maybe(a, ai) && to_int_maybe(b, bi)) return Multi::one(Value::integer(bit_or(ai,bi)));
+          return Multi::one(meta_bin(a,b,s__bor,"Lua: bitwise or"));
+        }
+        case TK::BitXor: {
+          std::int64_t ai=0, bi=0;
+          if (to_int_maybe(a, ai) && to_int_maybe(b, bi)) return Multi::one(Value::integer(bit_xor(ai,bi)));
+          return Multi::one(meta_bin(a,b,s__bxor,"Lua: bitwise xor"));
+        }
+        case TK::Shl: {
+          std::int64_t ai=0, bi=0;
+          if (to_int_maybe(a, ai) && to_int_maybe(b, bi)) return Multi::one(Value::integer(shift_left(ai,bi)));
+          return Multi::one(meta_bin(a,b,s__shl,"Lua: bitwise shift left"));
+        }
+        case TK::Shr: {
+          std::int64_t ai=0, bi=0;
+          if (to_int_maybe(a, ai) && to_int_maybe(b, bi)) return Multi::one(Value::integer(shift_right(ai,bi)));
+          return Multi::one(meta_bin(a,b,s__shr,"Lua: bitwise shift right"));
+        }
         case TK::Pow:
           if (is_number(a)&&is_number(b)) return Multi::one(Value::number(pow_num(to_num(a),to_num(b))));
           return Multi::one(meta_bin(a,b,s__pow,"Lua: pow"));
@@ -1028,11 +1084,19 @@ consteval void VM::init(std::uint32_t libs) {
   s__mod     = H.sp.intern("__mod");
   s__pow     = H.sp.intern("__pow");
   s__unm     = H.sp.intern("__unm");
+  s__bnot    = H.sp.intern("__bnot");
+  s__band    = H.sp.intern("__band");
+  s__bor     = H.sp.intern("__bor");
+  s__bxor    = H.sp.intern("__bxor");
+  s__shl     = H.sp.intern("__shl");
+  s__shr     = H.sp.intern("__shr");
   s__len     = H.sp.intern("__len");
   s__concat  = H.sp.intern("__concat");
   s__eq      = H.sp.intern("__eq");
   s__lt      = H.sp.intern("__lt");
   s__le      = H.sp.intern("__le");
+  s__pairs   = H.sp.intern("__pairs");
+  s__tostring= H.sp.intern("__tostring");
 
   G=H.new_table_pow2(8);
   H.envs[0].env_table=G;

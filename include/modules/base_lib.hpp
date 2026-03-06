@@ -2,6 +2,18 @@
 
 namespace ct_lua54 {
 
+constexpr Multi VM::nf_print(VM& vm, const Value* a, std::size_t n) {
+  // Compile-time engine: print is a side-effect-free sink, but it still
+  // evaluates tostring semantics (including __tostring metamethod effects).
+  for (std::size_t i=0;i<n;++i) (void)vm.value_tostring(a[i]);
+  return Multi::none();
+}
+
+constexpr Multi VM::nf_tostring(VM& vm, const Value* a, std::size_t n) {
+  Value v = (n==0) ? Value::nil() : a[0];
+  return Multi::one(Value::string(vm.value_tostring(v)));
+}
+
 constexpr Multi VM::nf_type(VM& vm, const Value* a, std::size_t n) {
   auto t = (n==0) ? Tag::Nil : a[0].tag;
   std::string_view s =
@@ -53,7 +65,18 @@ constexpr Multi VM::nf_next(VM& vm, const Value* a, std::size_t n) {
 }
 
 constexpr Multi VM::nf_pairs(VM& vm, const Value* a, std::size_t n) {
-  if (n<1 || a[0].tag!=Tag::Table) throw "Lua: pairs(t)";
+  if (n<1) throw "Lua: pairs(t)";
+  Value mm=vm.rawget_mt(vm.metatable_of(a[0]), vm.s__pairs);
+  if (!mm.is_nil()) {
+    vm.tmp_args[0]=a[0];
+    Multi r=vm.call_value(mm, vm.tmp_args.data(), 1);
+    Multi out{}; out.n=3;
+    out.v[0]=(r.n>0)? r.v[0] : Value::nil();
+    out.v[1]=(r.n>1)? r.v[1] : Value::nil();
+    out.v[2]=(r.n>2)? r.v[2] : Value::nil();
+    return out;
+  }
+  if (a[0].tag!=Tag::Table) throw "Lua: pairs(t)";
   Multi m; m.n=3;
   m.v[0]=vm.mk_native(vm.id_next);
   m.v[1]=a[0];
@@ -62,6 +85,12 @@ constexpr Multi VM::nf_pairs(VM& vm, const Value* a, std::size_t n) {
 }
 
 consteval void VM::open_base() {
+  auto id_print=reg_native("print",&VM::nf_print);
+  table_set(G,Value::string(H.sp.intern("print")),mk_native(id_print));
+
+  auto id_tostring=reg_native("tostring",&VM::nf_tostring);
+  table_set(G,Value::string(H.sp.intern("tostring")),mk_native(id_tostring));
+
   auto id_type=reg_native("type",&VM::nf_type);
   table_set(G,Value::string(H.sp.intern("type")),mk_native(id_type));
 

@@ -27,6 +27,10 @@ EQ(P ^ 0, 9, "__pow")
 local F = setmetatable({}, { __call = function(self, v) return v + 1 end })
 EQ(F(41), 42, "__call")
 
+local TS = setmetatable({}, { __tostring = function(self) return "TS" end })
+EQ(tostring(TS), "TS", "__tostring")
+CHECK(print(TS) == nil, "print uses tostring path")
+
 local ptab = { k=7, [1]=11, [2]=22 }
 local k0, v0 = next(ptab, nil)
 CHECK(k0 ~= nil, "next key")
@@ -40,6 +44,39 @@ end
 EQ(sum, 33, "pairs/for-in")
 rawset(ptab, "q", 8)
 EQ(rawget(ptab, "q"), 8, "rawget/rawset")
+
+local P2 = setmetatable({}, {
+  __pairs = function(self)
+    local i = 0
+    local function it(st, var)
+      i = i + 1
+      if i == 1 then return "a", 10 end
+      if i == 2 then return "b", 20 end
+      return nil
+    end
+    return it, self, nil
+  end
+})
+local ps = 0
+for k,v in pairs(P2) do
+  ps = ps + v
+end
+EQ(ps, 30, "__pairs")
+
+local BW = setmetatable({}, {
+  __band = function(a,b) return 11 end,
+  __bor  = function(a,b) return 12 end,
+  __bxor = function(a,b) return 13 end,
+  __shl  = function(a,b) return 14 end,
+  __shr  = function(a,b) return 15 end,
+  __bnot = function(a)   return 16 end
+})
+EQ(BW & 1, 11, "__band")
+EQ(BW | 1, 12, "__bor")
+EQ(BW ~ 1, 13, "__bxor")
+EQ(BW << 1, 14, "__shl")
+EQ(BW >> 1, 15, "__shr")
+EQ(~BW, 16, "__bnot")
 
 return 1
 )lua"}, ct_lua54::LIB_BASE>();
