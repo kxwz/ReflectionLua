@@ -22,6 +22,7 @@ static constexpr std::size_t MAX_FIELDS    = 32768;
 
 static constexpr std::size_t MAX_RET       = 32;
 static constexpr std::size_t MAX_ARGS      = 32;
+static constexpr std::size_t MAX_PRINT_BYTES = 32 * 1024;
 
 static constexpr std::size_t STEP_LIMIT    = 2'000'000;
 

@@ -31,6 +31,23 @@ local TS = setmetatable({}, { __tostring = function(self) return "TS" end })
 EQ(tostring(TS), "TS", "__tostring")
 CHECK(print(TS) == nil, "print uses tostring path")
 
+local se = setmetatable({}, { __eq = function(a,b) return false end })
+EQ(se == se, true, "__eq not used for identical object")
+
+local ea = setmetatable({}, { __eq = function(a,b) return true end })
+local eb = {}
+EQ(ea == eb, false, "__eq requires both operands")
+
+local eqf = function(a,b) return true end
+local em = { __eq = eqf }
+local e1 = setmetatable({}, em)
+local e2 = setmetatable({}, em)
+EQ(e1 == e2, true, "__eq shared metamethod")
+
+local e3 = setmetatable({}, { __eq = function(a,b) return true end })
+local e4 = setmetatable({}, { __eq = function(a,b) return true end })
+EQ(e3 == e4, false, "__eq different metamethods")
+
 local ptab = { k=7, [1]=11, [2]=22 }
 local k0, v0 = next(ptab, nil)
 CHECK(k0 ~= nil, "next key")

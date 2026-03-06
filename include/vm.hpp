@@ -37,6 +37,9 @@ struct VM {
 
   struct VarArgs { const Value* p{nullptr}; std::size_t n{0}; };
   std::array<Value, MAX_ARGS> tmp_args{};
+  std::array<char, MAX_PRINT_BYTES> print_buf{};
+  std::size_t print_n{0};
+  bool print_truncated{false};
 
   static constexpr bool is_number(const Value& v){ return v.tag==Tag::Int || v.tag==Tag::Num; }
   static constexpr double to_num(const Value& v){
@@ -175,6 +178,19 @@ struct VM {
 
   constexpr Value first(const Multi& m){ return m.n? m.v[0] : Value::nil(); }
 
+  constexpr void print_append_char(char c){
+    if (print_n < print_buf.size()) { print_buf[print_n++]=c; return; }
+    print_truncated=true;
+  }
+
+  constexpr void print_append_sv(std::string_view s){
+    for (char c: s) print_append_char(c);
+  }
+
+  constexpr std::string_view print_view() const {
+    return std::string_view(print_buf.data(), print_n);
+  }
+
   constexpr TableId metatable_of(const Value& v) {
     if (v.tag==Tag::Table) return H.tables[v.t.id].mt;
     if (v.tag==Tag::UData) return H.udata[v.u.id].mt;
@@ -196,6 +212,34 @@ struct VM {
     if (idx.tag==Tag::Table) return table_get(idx.t,key);
     tmp_args[0]=Value::table(t); tmp_args[1]=key;
     return first(call_value(idx,tmp_args.data(),2));
+  }
+
+  constexpr bool raw_has_int_key(TableId t, std::int64_t k) const {
+    if (k<=0) return false;
+    return !H.rawget(t, Value::integer(k)).is_nil();
+  }
+
+  constexpr std::int64_t raw_len_table(TableId t) const {
+    // Lua-like border search over raw integer keys (ignores __index).
+    if (!raw_has_int_key(t, 1)) return 0;
+
+    constexpr std::uint64_t KMAX = 9223372036854775807ull;
+    std::uint64_t i=1;
+    std::uint64_t j=2;
+
+    while (j<=KMAX && raw_has_int_key(t, (std::int64_t)j)) {
+      i=j;
+      if (j > (KMAX/2)) { j=KMAX; break; }
+      j*=2;
+    }
+    if (j==KMAX && raw_has_int_key(t, (std::int64_t)KMAX)) return (std::int64_t)KMAX;
+
+    while (j-i>1) {
+      std::uint64_t m=i + ((j-i)>>1);
+      if (raw_has_int_key(t, (std::int64_t)m)) i=m;
+      else j=m;
+    }
+    return (std::int64_t)i;
   }
 
   constexpr void table_set(TableId t, const Value& key, const Value& val) {
@@ -223,26 +267,51 @@ struct VM {
     throw err;
   }
 
-  constexpr bool v_eq(const Value& a, const Value& b){
+  static constexpr bool raw_eq_nometa(const Value& a, const Value& b){
     if (a.tag!=b.tag) {
       if (a.tag==Tag::Int && b.tag==Tag::Num) return (double)a.i==b.n;
       if (a.tag==Tag::Num && b.tag==Tag::Int) return a.n==(double)b.i;
       return false;
     }
     switch (a.tag) {
+      case Tag::Nil:   return true;
+      case Tag::Bool:  return a.b==b.b;
+      case Tag::Int:   return a.i==b.i;
+      case Tag::Num:   return a.n==b.n;
+      case Tag::Str:   return a.s.id==b.s.id;
+      case Tag::Table: return a.t.id==b.t.id;
+      case Tag::UData: return a.u.id==b.u.id;
+      case Tag::Func:  return a.f.id==b.f.id && a.f.is_native==b.f.is_native;
+    }
+    return false;
+  }
+
+  constexpr bool v_eq(const Value& a, const Value& b){
+    if (a.tag!=b.tag) return raw_eq_nometa(a,b);
+    switch (a.tag) {
       case Tag::Nil: return true;
       case Tag::Bool:return a.b==b.b;
       case Tag::Int: return a.i==b.i;
       case Tag::Num: return a.n==b.n;
       case Tag::Str: return a.s.id==b.s.id;
-      case Tag::Table:
-      case Tag::UData:
-      case Tag::Func: {
-        Value mmv=rawget_mt(metatable_of(a),s__eq);
-        if (!mmv.is_nil()) { tmp_args[0]=a; tmp_args[1]=b; return truthy(first(call_value(mmv,tmp_args.data(),2))); }
-        if (a.tag==Tag::Table) return a.t.id==b.t.id;
-        if (a.tag==Tag::UData) return a.u.id==b.u.id;
-        return a.f.id==b.f.id && a.f.is_native==b.f.is_native;
+      case Tag::Func: return a.f.id==b.f.id && a.f.is_native==b.f.is_native;
+      case Tag::Table: {
+        if (a.t.id==b.t.id) return true;
+        Value mma=rawget_mt(metatable_of(a),s__eq);
+        Value mmb=rawget_mt(metatable_of(b),s__eq);
+        if (mma.is_nil() || mmb.is_nil()) return false;
+        if (!raw_eq_nometa(mma,mmb)) return false;
+        tmp_args[0]=a; tmp_args[1]=b;
+        return truthy(first(call_value(mma,tmp_args.data(),2)));
+      }
+      case Tag::UData: {
+        if (a.u.id==b.u.id) return true;
+        Value mma=rawget_mt(metatable_of(a),s__eq);
+        Value mmb=rawget_mt(metatable_of(b),s__eq);
+        if (mma.is_nil() || mmb.is_nil()) return false;
+        if (!raw_eq_nometa(mma,mmb)) return false;
+        tmp_args[0]=a; tmp_args[1]=b;
+        return truthy(first(call_value(mma,tmp_args.data(),2)));
       }
     }
     return false;
@@ -339,9 +408,7 @@ struct VM {
     Value mmv=rawget_mt(mt,s__len);
     if (!mmv.is_nil()) { tmp_args[0]=a; return first(call_value(mmv,tmp_args.data(),1)); }
     if (a.tag==Tag::Table) {
-      std::int64_t n=0;
-      for (std::int64_t k=1;;++k){ if (table_get(a.t, Value::integer(k)).is_nil()) break; n=k; }
-      return Value::integer(n);
+      return Value::integer(raw_len_table(a.t));
     }
     throw "Lua: length of unsupported type";
   }
@@ -467,7 +534,16 @@ struct VM {
   static constexpr Multi nf_string_reverse(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_format(VM& vm, const Value* a, std::size_t n);
 
+  // --- utf8 module ---
+  static constexpr Multi nf_utf8_char(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_utf8_codepoint(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_utf8_codes(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_utf8_codes_iter(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_utf8_len(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_utf8_offset(VM& vm, const Value* a, std::size_t n);
+
   std::uint32_t id_next{0};
+  std::uint32_t id_utf8_codes_iter{0};
 
   // call / eval / exec
   constexpr Multi call_value(const Value& callee, const Value* args, std::size_t argc);
@@ -512,12 +588,14 @@ struct VM {
   static constexpr std::uint32_t LIB_TABLE= 1u << 2;
   static constexpr std::uint32_t LIB_MATH = 1u << 3;
   static constexpr std::uint32_t LIB_STRING = 1u << 4;
-  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH | LIB_STRING;
+  static constexpr std::uint32_t LIB_UTF8 = 1u << 5;
+  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH | LIB_STRING | LIB_UTF8;
 
   consteval void open_base();
   consteval void open_table();
   consteval void open_math();
   consteval void open_string();
+  consteval void open_utf8();
   consteval void open_api();
   consteval void init(std::uint32_t libs);
   consteval void init() { init(LIB_BASE); }
@@ -592,14 +670,15 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
       return Multi::one(table_get(H.envs[env.id].env_table, Value::string(e.s)));
     }
     case EKind::Paren:
-      return eval_expr(e.a,env,vargs,multret);
+      // Lua adjustment: parenthesized expressions always produce one value.
+      return Multi::one(first(eval_expr(e.a,env,vargs,false)));
     case EKind::Unary: {
       Value x=first(eval_expr(e.a,env,vargs,false));
       if (e.op==TK::Not) return Multi::one(Value::boolean(!truthy(x)));
       if (e.op==TK::Minus) {
         if (x.tag==Tag::Int) return Multi::one(Value::integer(-x.i));
         if (x.tag==Tag::Num) return Multi::one(Value::number(-x.n));
-        return Multi::one(meta_bin(x,Value::nil(),s__unm,"Lua: unary minus"));
+        return Multi::one(meta_un(x,s__unm,"Lua: unary minus"));
       }
       if (e.op==TK::BitXor) {
         std::int64_t xi=0;
@@ -795,6 +874,17 @@ constexpr VM::Exec VM::exec_block(BRange blk, EnvId env, VarArgs vargs) {
   std::array<std::uint16_t, 2048> label_pc{};
   std::uint16_t nlabels=0;
 
+  auto jump_crosses_new_local = [&](std::uint16_t from_pc, std::uint16_t to_pc) constexpr -> bool {
+    if (to_pc <= from_pc) return false; // only forward jumps can enter not-yet-active local scopes
+    for (std::uint16_t i=(std::uint16_t)(from_pc+1); i<=to_pc; ++i) {
+      StmtId sid2=A.blist[blk.off+i];
+      const Stmt& s2=A.st[sid2];
+      if (s2.k==SKind::Local && s2.r0.n>0) return true;
+      if (s2.k==SKind::LocalFunc) return true;
+    }
+    return false;
+  };
+
   for (std::uint16_t i=0;i<blk.n;++i) {
     StmtId sid=A.blist[blk.off+i];
     const Stmt& s=A.st[sid];
@@ -818,6 +908,7 @@ constexpr VM::Exec VM::exec_block(BRange blk, EnvId env, VarArgs vargs) {
       bool found=false;
       for (std::uint16_t k=0;k<nlabels;++k) {
         if (labels[k].id==r.goto_name.id) {
+          if (jump_crosses_new_local(pc, label_pc[k])) throw "Lua: cannot jump into the scope of a local";
           pc=label_pc[k];
           found=true;
           break;
@@ -966,46 +1057,64 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
       return ex;
     }
     case SKind::Assign: {
+      enum class LhsK : std::uint8_t { NameLocal, NameGlobal, IndexLike };
+      struct LhsTarget {
+        LhsK k{LhsK::NameGlobal};
+        CellId cell{UINT32_MAX};
+        StrId name{};
+        Value obj{};
+        Value key{};
+      };
+
+      std::array<LhsTarget, MAX_ARGS> lhs{};
+      for (std::uint16_t i=0;i<s.r0.n;++i) {
+        const Expr& v=A.expr[A.list[s.r0.off+i]];
+        LhsTarget t{};
+        if (v.k==EKind::Name) {
+          CellId c=H.env_find(env,v.s);
+          if (c.id!=UINT32_MAX) { t.k=LhsK::NameLocal; t.cell=c; }
+          else { t.k=LhsK::NameGlobal; t.name=v.s; }
+        } else if (v.k==EKind::Field) {
+          t.k=LhsK::IndexLike;
+          t.obj=first(eval_expr(v.a,env,vargs,false));
+          t.key=Value::string(v.s);
+        } else if (v.k==EKind::Index) {
+          t.k=LhsK::IndexLike;
+          t.obj=first(eval_expr(v.a,env,vargs,false));
+          t.key=first(eval_expr(v.b,env,vargs,false));
+        } else {
+          throw "Lua: invalid assignment target";
+        }
+        lhs[i]=t;
+      }
+
       std::array<Value, MAX_ARGS> rhs{};
       std::size_t outn=0;
       for (std::uint16_t i=0;i<s.r1.n;++i) {
         bool last=(i+1==s.r1.n);
         Multi mv=eval_expr(A.list[s.r1.off+i],env,vargs,last);
         if (last && mv.n>1) for (std::uint8_t k=0;k<mv.n && outn<MAX_ARGS;++k) rhs[outn++]=mv.v[k];
-        else rhs[outn++]=first(mv);
+        else if (outn<MAX_ARGS) rhs[outn++]=first(mv);
       }
 
       for (std::uint16_t i=0;i<s.r0.n;++i) {
-        const Expr& v=A.expr[A.list[s.r0.off+i]];
+        const LhsTarget& t=lhs[i];
         Value val=(i<outn)? rhs[i] : Value::nil();
 
-        if (v.k==EKind::Name) {
-          CellId c=H.env_find(env,v.s);
-          if (c.id!=UINT32_MAX) H.cells[c.id].v=val;
-          else table_set(H.envs[env.id].env_table,Value::string(v.s),val);
-        } else if (v.k==EKind::Field) {
-          Value obj=first(eval_expr(v.a,env,vargs,false));
-          Value key=Value::string(v.s);
-          if (obj.tag==Tag::Table) table_set(obj.t,key,val);
+        if (t.k==LhsK::NameLocal) {
+          H.cells[t.cell.id].v=val;
+        } else if (t.k==LhsK::NameGlobal) {
+          table_set(H.envs[env.id].env_table,Value::string(t.name),val);
+        } else {
+          if (t.obj.tag==Tag::Table) table_set(t.obj.t,t.key,val);
           else {
-            TableId mt=metatable_of(obj);
-            Value ni=rawget_mt(mt,s__newindex);
-            if (ni.is_nil()) throw "Lua: set field on non-table";
-            if (ni.tag==Tag::Table) table_set(ni.t,key,val);
-            else { tmp_args[0]=obj; tmp_args[1]=key; tmp_args[2]=val; (void)call_value(ni,tmp_args.data(),3); }
-          }
-        } else if (v.k==EKind::Index) {
-          Value obj=first(eval_expr(v.a,env,vargs,false));
-          Value key=first(eval_expr(v.b,env,vargs,false));
-          if (obj.tag==Tag::Table) table_set(obj.t,key,val);
-          else {
-            TableId mt=metatable_of(obj);
+            TableId mt=metatable_of(t.obj);
             Value ni=rawget_mt(mt,s__newindex);
             if (ni.is_nil()) throw "Lua: set index on non-table";
-            if (ni.tag==Tag::Table) table_set(ni.t,key,val);
-            else { tmp_args[0]=obj; tmp_args[1]=key; tmp_args[2]=val; (void)call_value(ni,tmp_args.data(),3); }
+            if (ni.tag==Tag::Table) table_set(ni.t,t.key,val);
+            else { tmp_args[0]=t.obj; tmp_args[1]=t.key; tmp_args[2]=val; (void)call_value(ni,tmp_args.data(),3); }
           }
-        } else throw "Lua: invalid assignment target";
+        }
       }
       return ex;
     }
@@ -1105,6 +1214,7 @@ consteval void VM::init(std::uint32_t libs) {
   if (libs & LIB_TABLE) open_table();
   if (libs & LIB_MATH) open_math();
   if (libs & LIB_STRING) open_string();
+  if (libs & LIB_UTF8) open_utf8();
   if (libs & LIB_API)  open_api();
 }
 
@@ -1117,6 +1227,27 @@ constexpr Multi VM::run_chunk(std::string_view src) {
 }
 
 // ---------------- compile-time user API ----------------
+struct RunCapture {
+  Value value{};
+  std::array<char, MAX_PRINT_BYTES> print{};
+  std::size_t print_n{0};
+  bool print_truncated{false};
+};
+
+template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
+consteval RunCapture run_capture() {
+  VM vm;
+  vm.init(Libs);
+  Multi r=vm.run_chunk(Script.view());
+
+  RunCapture out{};
+  out.value = r.n? r.v[0] : Value::nil();
+  out.print_n = vm.print_n;
+  out.print_truncated = vm.print_truncated;
+  for (std::size_t i=0;i<vm.print_n;++i) out.print[i]=vm.print_buf[i];
+  return out;
+}
+
 template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
 consteval Value run1() {
   VM vm;
@@ -1133,12 +1264,28 @@ consteval double run_number() {
   throw "Lua: expected numeric result";
 }
 
+inline void print_buffer(const RunCapture& out) {
+  if (out.print_n) {
+    std::cout.write(out.print.data(), static_cast<std::streamsize>(out.print_n));
+  }
+  if (out.print_truncated) {
+    std::cout << "[ct_lua54] print buffer truncated\n";
+  }
+}
+
+template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
+inline void print_buffer() {
+  constexpr RunCapture out = run_capture<Script, Libs>();
+  print_buffer(out);
+}
+
 // Library masks for run1/run_number, e.g. run_number<script, LIB_ALL>().
 inline constexpr std::uint32_t LIB_BASE = VM::LIB_BASE;
 inline constexpr std::uint32_t LIB_API  = VM::LIB_API;
 inline constexpr std::uint32_t LIB_TABLE= VM::LIB_TABLE;
 inline constexpr std::uint32_t LIB_MATH = VM::LIB_MATH;
 inline constexpr std::uint32_t LIB_STRING = VM::LIB_STRING;
+inline constexpr std::uint32_t LIB_UTF8 = VM::LIB_UTF8;
 inline constexpr std::uint32_t LIB_ALL  = VM::LIB_ALL;
 
 } // namespace ct_lua54

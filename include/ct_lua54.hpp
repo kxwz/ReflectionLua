@@ -8,5 +8,5 @@
 #include "modules/table_lib.hpp"
 #include "modules/math_lib.hpp"
 #include "modules/string_lib.hpp"
+#include "modules/utf8_lib.hpp"
 #include "modules/api_lib.hpp"
-

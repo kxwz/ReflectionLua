@@ -3,9 +3,13 @@
 namespace ct_lua54 {
 
 constexpr Multi VM::nf_print(VM& vm, const Value* a, std::size_t n) {
-  // Compile-time engine: print is a side-effect-free sink, but it still
-  // evaluates tostring semantics (including __tostring metamethod effects).
-  for (std::size_t i=0;i<n;++i) (void)vm.value_tostring(a[i]);
+  // Compile-time engine: capture prints into VM buffer.
+  for (std::size_t i=0;i<n;++i) {
+    if (i) vm.print_append_char('\t');
+    StrId s=vm.value_tostring(a[i]);
+    vm.print_append_sv(vm.H.sp.view(s));
+  }
+  vm.print_append_char('\n');
   return Multi::none();
 }
 

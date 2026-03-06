@@ -46,12 +46,33 @@ EQ(#t, 4, "ctor multret len")
 EQ(t[1], 1, "t1")
 EQ(t[2], 10, "t2")
 EQ(t[4], 30, "t4")
+
+local p1,p2,p3 = (mr())
+EQ(p1, 10, "paren mr p1")
+EQ(p2, nil, "paren mr p2")
+EQ(p3, nil, "paren mr p3")
+local tp = { (mr()) }
+EQ(#tp, 1, "paren ctor len")
+EQ(tp[1], 10, "paren ctor v1")
+
 local u = { x=1, ["y"]=2, [3]=4 }
 EQ(u.x, 1, "u.x")
 EQ(u["y"], 2, "u[y]")
 EQ(u[3], 4, "u[3]")
+
+local ai = 1
+local at = { [1]=0, [2]=0 }
+ai, at[ai] = 2, 20
+EQ(ai, 2, "assign order i")
+EQ(at[1], 20, "assign order key capture")
+EQ(at[2], 0, "assign order no clobber")
+
 EQ(#"hello", 5, "len str")
 EQ(#t, 4, "len table")
+local lraw = setmetatable({1,2}, { __index = function(tt, k) return 99 end })
+EQ(#lraw, 2, "len ignores __index")
+local lh = { [1]=1, [2]=2, [4]=4 }
+EQ(#lh, 4, "len border search")
 EQ("a".."b", "ab", "concat ss")
 EQ("a"..1, "a1", "concat sn")
 
@@ -78,6 +99,15 @@ n = 99
 ::set_two::
 n = n + 2
 EQ(n, 2, "goto branch")
+
+local ok = 0
+do
+  goto out_ok
+  local hidden = 7
+  ok = hidden
+  ::out_ok::
+end
+EQ(ok, 0, "goto skips inner local scope safely")
 
 return 1
 )lua"}, ct_lua54::LIB_BASE>();
