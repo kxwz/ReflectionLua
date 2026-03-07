@@ -48,6 +48,10 @@ struct StringPool {
     return { bytes.data() + off[sid.id], len[sid.id] };
   }
 
+  constexpr const char* c_str(StrId sid) const {
+    return bytes.data() + off[sid.id];
+  }
+
   constexpr StrId intern(std::string_view s) {
     std::uint32_t h = fnv1a(s);
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -57,13 +61,14 @@ struct StringPool {
       }
     }
     if (count >= MAX_STRINGS) throw "Lua: string pool overflow";
-    if (used + s.size() > MAX_STR_BYTES) throw "Lua: string bytes overflow";
+    if (used + s.size() + 1 > MAX_STR_BYTES) throw "Lua: string bytes overflow";
     std::uint32_t id = count++;
     off[id] = used;
     len[id] = (std::uint32_t)s.size();
     hash[id] = h;
     for (std::size_t k = 0; k < s.size(); ++k) bytes[used + (std::uint32_t)k] = s[k];
-    used += (std::uint32_t)s.size();
+    bytes[used + (std::uint32_t)s.size()] = '\0';
+    used += (std::uint32_t)s.size() + 1u;
     return {id};
   }
 };

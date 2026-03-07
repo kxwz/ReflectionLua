@@ -119,14 +119,23 @@ constexpr Multi VM::nf_assert(VM&, const Value* a, std::size_t n) {
   return m;
 }
 
-constexpr Multi VM::nf_error(VM&, const Value*, std::size_t) {
+constexpr Multi VM::nf_error(VM& vm, const Value* a, std::size_t n) {
+  if (n>=1) {
+    StrId sid=vm.value_tostring(a[0]);
+    throw vm.H.sp.c_str(sid);
+  }
   throw "Lua: error";
 }
 
 constexpr Multi VM::nf_pcall(VM& vm, const Value* a, std::size_t n) {
   if (n<1) throw "Lua: pcall(f, ...)";
+  Value fn=a[0];
+  std::array<Value, MAX_ARGS> args{};
+  std::size_t argc=(n>1)?(n-1):0;
+  if (argc>MAX_ARGS) argc=MAX_ARGS;
+  for (std::size_t i=0;i<argc;++i) args[i]=a[i+1];
   try {
-    Multi r=vm.call_value(a[0], (n>1)?(a+1):nullptr, (n>1)?(n-1):0);
+    Multi r=vm.call_value(fn, argc?args.data():nullptr, argc);
     Multi out{};
     std::size_t wn=1u + (std::size_t)r.n;
     if (wn>MAX_RET) wn=MAX_RET;
@@ -149,8 +158,14 @@ constexpr Multi VM::nf_pcall(VM& vm, const Value* a, std::size_t n) {
 
 constexpr Multi VM::nf_xpcall(VM& vm, const Value* a, std::size_t n) {
   if (n<2) throw "Lua: xpcall(f, msgh, ...)";
+  Value fn=a[0];
+  Value msgh=a[1];
+  std::array<Value, MAX_ARGS> args{};
+  std::size_t argc=(n>2)?(n-2):0;
+  if (argc>MAX_ARGS) argc=MAX_ARGS;
+  for (std::size_t i=0;i<argc;++i) args[i]=a[i+2];
   try {
-    Multi r=vm.call_value(a[0], (n>2)?(a+2):nullptr, (n>2)?(n-2):0);
+    Multi r=vm.call_value(fn, argc?args.data():nullptr, argc);
     Multi out{};
     std::size_t wn=1u + (std::size_t)r.n;
     if (wn>MAX_RET) wn=MAX_RET;
@@ -163,7 +178,7 @@ constexpr Multi VM::nf_xpcall(VM& vm, const Value* a, std::size_t n) {
     Value handled=err;
     try {
       vm.tmp_args[0]=err;
-      handled=vm.first(vm.call_value(a[1], vm.tmp_args.data(), 1));
+      handled=vm.first(vm.call_value(msgh, vm.tmp_args.data(), 1));
     } catch (const char* msg2) {
       handled=base_detail::err_value(vm,msg2);
     } catch (...) {
