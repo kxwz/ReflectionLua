@@ -111,8 +111,15 @@ constexpr Multi VM::nf_print(VM& vm, const Value* a, std::size_t n) {
   return Multi::none();
 }
 
-constexpr Multi VM::nf_assert(VM&, const Value* a, std::size_t n) {
-  if (n<1 || !truthy(a[0])) throw "Lua: assertion failed!";
+constexpr Multi VM::nf_assert(VM& vm, const Value* a, std::size_t n) {
+  auto raise = [&](const char* msg) constexpr -> Multi {
+    if (vm.protected_depth) {
+      vm.pending_error=msg;
+      return Multi::none();
+    }
+    throw RuntimeError{msg};
+  };
+  if (n<1 || !truthy(a[0])) return raise("Lua: assertion failed!");
   Multi m{};
   m.n=(std::uint8_t)((n>MAX_RET)?MAX_RET:n);
   for (std::uint8_t i=0;i<m.n;++i) m.v[i]=a[i];
@@ -120,11 +127,18 @@ constexpr Multi VM::nf_assert(VM&, const Value* a, std::size_t n) {
 }
 
 constexpr Multi VM::nf_error(VM& vm, const Value* a, std::size_t n) {
+  auto raise = [&](const char* msg) constexpr -> Multi {
+    if (vm.protected_depth) {
+      vm.pending_error=msg;
+      return Multi::none();
+    }
+    throw RuntimeError{msg};
+  };
   if (n>=1) {
     StrId sid=vm.value_tostring(a[0]);
-    throw vm.H.sp.c_str(sid);
+    return raise(vm.H.sp.c_str(sid));
   }
-  throw "Lua: error";
+  return raise("Lua: error");
 }
 
 constexpr Multi VM::nf_pcall(VM& vm, const Value* a, std::size_t n) {
@@ -134,21 +148,44 @@ constexpr Multi VM::nf_pcall(VM& vm, const Value* a, std::size_t n) {
   std::size_t argc=(n>1)?(n-1):0;
   if (argc>MAX_ARGS) argc=MAX_ARGS;
   for (std::size_t i=0;i<argc;++i) args[i]=a[i+1];
+  const char* saved_pending=vm.pending_error;
+  ++vm.protected_depth;
+  vm.pending_error=nullptr;
   try {
-    Multi r=vm.call_value(fn, argc?args.data():nullptr, argc);
+    Multi ret=vm.call_value(fn, argc?args.data():nullptr, argc);
+    const char* pending=vm.pending_error;
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
+    if (pending) {
+      Multi out{}; out.n=2;
+      out.v[0]=Value::boolean(false);
+      out.v[1]=base_detail::err_value(vm,pending);
+      return out;
+    }
     Multi out{};
-    std::size_t wn=1u + (std::size_t)r.n;
+    std::size_t wn=1u + (std::size_t)ret.n;
     if (wn>MAX_RET) wn=MAX_RET;
     out.n=(std::uint8_t)wn;
     out.v[0]=Value::boolean(true);
-    for (std::size_t i=1;i<wn;++i) out.v[(std::uint8_t)i]=r.v[(std::uint8_t)(i-1)];
+    for (std::size_t i=1;i<wn;++i) out.v[(std::uint8_t)i]=ret.v[(std::uint8_t)(i-1)];
+    return out;
+  } catch (const RuntimeError& err) {
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
+    Multi out{}; out.n=2;
+    out.v[0]=Value::boolean(false);
+    out.v[1]=base_detail::err_value(vm,err.msg);
     return out;
   } catch (const char* msg) {
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
     Multi out{}; out.n=2;
     out.v[0]=Value::boolean(false);
     out.v[1]=base_detail::err_value(vm,msg);
     return out;
   } catch (...) {
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
     Multi out{}; out.n=2;
     out.v[0]=Value::boolean(false);
     out.v[1]=Value::string(vm.H.sp.intern("Lua: error"));
@@ -164,21 +201,82 @@ constexpr Multi VM::nf_xpcall(VM& vm, const Value* a, std::size_t n) {
   std::size_t argc=(n>2)?(n-2):0;
   if (argc>MAX_ARGS) argc=MAX_ARGS;
   for (std::size_t i=0;i<argc;++i) args[i]=a[i+2];
+  const char* saved_pending=vm.pending_error;
+  ++vm.protected_depth;
+  vm.pending_error=nullptr;
   try {
-    Multi r=vm.call_value(fn, argc?args.data():nullptr, argc);
-    Multi out{};
-    std::size_t wn=1u + (std::size_t)r.n;
-    if (wn>MAX_RET) wn=MAX_RET;
-    out.n=(std::uint8_t)wn;
-    out.v[0]=Value::boolean(true);
-    for (std::size_t i=1;i<wn;++i) out.v[(std::uint8_t)i]=r.v[(std::uint8_t)(i-1)];
+    Multi ret=vm.call_value(fn, argc?args.data():nullptr, argc);
+    const char* pending=vm.pending_error;
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
+    if (!pending) {
+      Multi out{};
+      std::size_t wn=1u + (std::size_t)ret.n;
+      if (wn>MAX_RET) wn=MAX_RET;
+      out.n=(std::uint8_t)wn;
+      out.v[0]=Value::boolean(true);
+      for (std::size_t i=1;i<wn;++i) out.v[(std::uint8_t)i]=ret.v[(std::uint8_t)(i-1)];
+      return out;
+    }
+
+    Value err=base_detail::err_value(vm,pending);
+    Value handled=err;
+    std::array<Value, 1> handler_args{err};
+
+    const char* saved_handler_pending=vm.pending_error;
+    ++vm.protected_depth;
+    vm.pending_error=nullptr;
+    try {
+      handled=vm.call_with_first(msgh, handler_args);
+      const char* handler_pending=vm.pending_error;
+      --vm.protected_depth;
+      vm.pending_error=saved_handler_pending;
+      if (handler_pending) handled=base_detail::err_value(vm,handler_pending);
+    } catch (const RuntimeError& err2) {
+      --vm.protected_depth;
+      vm.pending_error=saved_handler_pending;
+      handled=base_detail::err_value(vm,err2.msg);
+    } catch (const char* msg2) {
+      --vm.protected_depth;
+      vm.pending_error=saved_handler_pending;
+      handled=base_detail::err_value(vm,msg2);
+    } catch (...) {
+      --vm.protected_depth;
+      vm.pending_error=saved_handler_pending;
+      handled=Value::string(vm.H.sp.intern("Lua: error"));
+    }
+
+    Multi out{}; out.n=2;
+    out.v[0]=Value::boolean(false);
+    out.v[1]=handled;
+    return out;
+  } catch (const RuntimeError& err) {
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
+    Value handled=base_detail::err_value(vm,err.msg);
+    std::array<Value, 1> handler_args{handled};
+    try {
+      handled=vm.call_with_first(msgh, handler_args);
+    } catch (const RuntimeError& err2) {
+      handled=base_detail::err_value(vm,err2.msg);
+    } catch (const char* msg2) {
+      handled=base_detail::err_value(vm,msg2);
+    } catch (...) {
+      handled=Value::string(vm.H.sp.intern("Lua: error"));
+    }
+    Multi out{}; out.n=2;
+    out.v[0]=Value::boolean(false);
+    out.v[1]=handled;
     return out;
   } catch (const char* msg) {
-    Value err=base_detail::err_value(vm,msg);
-    Value handled=err;
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
+    Value handled=base_detail::err_value(vm,msg);
+    std::array<Value, 1> handler_args{handled};
     try {
-      vm.tmp_args[0]=err;
-      handled=vm.first(vm.call_value(msgh, vm.tmp_args.data(), 1));
+      handled=vm.call_with_first(msgh, handler_args);
+    } catch (const RuntimeError& err2) {
+      handled=base_detail::err_value(vm,err2.msg);
     } catch (const char* msg2) {
       handled=base_detail::err_value(vm,msg2);
     } catch (...) {
@@ -189,6 +287,8 @@ constexpr Multi VM::nf_xpcall(VM& vm, const Value* a, std::size_t n) {
     out.v[1]=handled;
     return out;
   } catch (...) {
+    --vm.protected_depth;
+    vm.pending_error=saved_pending;
     Multi out{}; out.n=2;
     out.v[0]=Value::boolean(false);
     out.v[1]=Value::string(vm.H.sp.intern("Lua: error"));
@@ -245,6 +345,8 @@ constexpr Multi VM::nf_type(VM& vm, const Value* a, std::size_t n) {
 
 constexpr Multi VM::nf_setmetatable(VM& vm, const Value* a, std::size_t n) {
   if (n<2 || a[0].tag!=Tag::Table || (a[1].tag!=Tag::Table && a[1].tag!=Tag::Nil)) throw "Lua: setmetatable(t,mt)";
+  TableId cur = vm.H.tables[a[0].t.id].mt;
+  if (cur.id!=0 && !vm.rawget_mt(cur, vm.s__metatable).is_nil()) throw "Lua: cannot change a protected metatable";
   vm.H.tables[a[0].t.id].mt = (a[1].tag==Tag::Table)? a[1].t : TableId{0};
   return Multi::one(a[0]);
 }
@@ -252,7 +354,10 @@ constexpr Multi VM::nf_setmetatable(VM& vm, const Value* a, std::size_t n) {
 constexpr Multi VM::nf_getmetatable(VM& vm, const Value* a, std::size_t n) {
   if (n<1) return Multi::one(Value::nil());
   TableId mt = vm.metatable_of(a[0]);
-  return mt.id? Multi::one(Value::table(mt)) : Multi::one(Value::nil());
+  if (!mt.id) return Multi::one(Value::nil());
+  Value masked = vm.rawget_mt(mt, vm.s__metatable);
+  if (!masked.is_nil()) return Multi::one(masked);
+  return Multi::one(Value::table(mt));
 }
 
 constexpr Multi VM::nf_rawget(VM& vm, const Value* a, std::size_t n) {
@@ -285,8 +390,8 @@ constexpr Multi VM::nf_pairs(VM& vm, const Value* a, std::size_t n) {
   if (n<1) throw "Lua: pairs(t)";
   Value mm=vm.rawget_mt(vm.metatable_of(a[0]), vm.s__pairs);
   if (!mm.is_nil()) {
-    vm.tmp_args[0]=a[0];
-    Multi r=vm.call_value(mm, vm.tmp_args.data(), 1);
+    std::array<Value, 1> args{a[0]};
+    Multi r=vm.call_value(mm, args.data(), 1);
     Multi out{}; out.n=3;
     out.v[0]=(r.n>0)? r.v[0] : Value::nil();
     out.v[1]=(r.n>1)? r.v[1] : Value::nil();
@@ -364,6 +469,60 @@ constexpr Multi VM::nf_tonumber(VM& vm, const Value* a, std::size_t n) {
   return Multi::one(Value::integer(iv));
 }
 
+constexpr Multi VM::nf_load(VM& vm, const Value* a, std::size_t n) {
+  if (n<1 || a[0].tag!=Tag::Str) throw "Lua: load(chunk [, chunkname [, mode [, env]]])";
+
+  if (n>=3 && !a[2].is_nil()) {
+    if (a[2].tag!=Tag::Str) throw "Lua: load mode must be string";
+    auto mode=vm.H.sp.view(a[2].s);
+    bool text_ok=false;
+    for (char c: mode) {
+      if (c=='t') { text_ok=true; break; }
+    }
+    if (!text_ok) {
+      Multi out{}; out.n=2;
+      out.v[0]=Value::nil();
+      out.v[1]=Value::string(vm.H.sp.intern("Lua: load only supports text chunks"));
+      return out;
+    }
+  }
+
+  TableId env=vm.G;
+  if (n>=4 && !a[3].is_nil()) {
+    if (a[3].tag!=Tag::Table) throw "Lua: load env must be table";
+    env=a[3].t;
+  }
+
+  Heap saved_h=vm.H;
+  Arena saved_a=vm.A;
+
+  try {
+    Value fn=vm.compile_chunk(vm.H.sp.view(a[0].s), env);
+    return Multi::one(fn);
+  } catch (const RuntimeError& err) {
+    vm.H=saved_h;
+    vm.A=saved_a;
+    Multi out{}; out.n=2;
+    out.v[0]=Value::nil();
+    out.v[1]=base_detail::err_value(vm, err.msg);
+    return out;
+  } catch (const char* msg) {
+    vm.H=saved_h;
+    vm.A=saved_a;
+    Multi out{}; out.n=2;
+    out.v[0]=Value::nil();
+    out.v[1]=base_detail::err_value(vm, msg);
+    return out;
+  } catch (...) {
+    vm.H=saved_h;
+    vm.A=saved_a;
+    Multi out{}; out.n=2;
+    out.v[0]=Value::nil();
+    out.v[1]=Value::string(vm.H.sp.intern("Lua: error"));
+    return out;
+  }
+}
+
 consteval void VM::open_base() {
   id_ipairs_iter=reg_native("ipairs._iter",&VM::nf_ipairs_iter);
 
@@ -423,6 +582,12 @@ consteval void VM::open_base() {
 
   auto id_tonumber=reg_native("tonumber",&VM::nf_tonumber);
   table_set(G,Value::string(H.sp.intern("tonumber")),mk_native(id_tonumber));
+
+  auto id_load=reg_native("load",&VM::nf_load);
+  table_set(G,Value::string(H.sp.intern("load")),mk_native(id_load));
+
+  table_set(G,Value::string(H.sp.intern("_G")),Value::table(G));
+  table_set(G,Value::string(H.sp.intern("_VERSION")),Value::string(H.sp.intern("Lua 5.4")));
 }
 
 } // namespace ct_lua54

@@ -39,8 +39,8 @@ constexpr Multi VM::nf_table_sort(VM& vm, const Value* a, std::size_t n) {
   std::int64_t len=to_int(vm.v_len(Value::table(t)));
   auto less = [&](const Value& x, const Value& y) constexpr -> bool {
     if (!comp.is_nil()) {
-      vm.tmp_args[0]=x; vm.tmp_args[1]=y;
-      return truthy(vm.first(vm.call_value(comp, vm.tmp_args.data(), 2)));
+      std::array<Value, 2> args{x, y};
+      return vm.call_with_truthy(comp, args);
     }
     return vm.v_lt(x,y);
   };

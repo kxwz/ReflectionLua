@@ -9,6 +9,15 @@ local o = setmetatable({}, { __index = { z = 99 } })
 EQ(o.z, 99, "__index table")
 EQ(type(getmetatable(o)), "table", "getmetatable")
 
+do
+  local mt = { __index = { z = 7 }, __metatable = "locked" }
+  local obj = setmetatable({}, mt)
+  EQ(getmetatable(obj), "locked", "__metatable hides metatable")
+  local ok1, e1 = pcall(function() setmetatable(obj, {}) end)
+  CHECK(ok1 == false and type(e1) == "string", "__metatable blocks replace")
+  EQ(obj.z, 7, "__metatable protection preserves mt")
+end
+
 local o2 = setmetatable({}, {
   __newindex = function(tt, k, v)
     rawset(tt, k, v*2)
@@ -100,6 +109,16 @@ return 1
 
 static_assert(r_meta == 1.0, "meta example failed");
 
+constexpr double r_meta_protected_clear = ct_lua54::run_number<fixed_string{R"lua(
+local mt = { __index = { z = 7 }, __metatable = "locked" }
+local obj = setmetatable({}, mt)
+local ok, e = pcall(function() setmetatable(obj, nil) end)
+if ok ~= false or type(e) ~= "string" then return 1 end
+if getmetatable(obj) ~= "locked" then return 2 end
+if obj.z ~= 7 then return 3 end
+return 0
+)lua"}, ct_lua54::LIB_BASE>();
+
+static_assert(r_meta_protected_clear == 0.0, "protected metatable clear failed");
+
 int main() { return 0; }
-
-

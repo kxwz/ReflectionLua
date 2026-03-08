@@ -2,6 +2,10 @@
 
 namespace ct_lua54 {
 
+struct RuntimeError {
+  const char* msg{nullptr};
+};
+
 // ---------------- budgets ----------------
 static constexpr std::size_t MAX_STRINGS   = 2048;
 static constexpr std::size_t MAX_STR_BYTES = 128 * 1024;
@@ -106,6 +110,36 @@ struct Value {
   constexpr bool is_nil() const { return tag==Tag::Nil; }
 };
 
+static constexpr bool as_exact_i64(double x, std::int64_t& out) {
+  if (!(x==x)) return false;
+  if (x < -9223372036854775808.0 || x > 9223372036854775807.0) return false;
+  std::int64_t i=(std::int64_t)x;
+  if ((double)i != x) return false;
+  out=i;
+  return true;
+}
+
+static constexpr Value canonical_table_key(const Value& key) {
+  if (key.tag != Tag::Num) return key;
+  std::int64_t i=0;
+  if (as_exact_i64(key.n, i)) return Value::integer(i);
+  return key;
+}
+
+static constexpr bool numeric_eq_exact(const Value& a, const Value& b) {
+  if (a.tag==Tag::Int && b.tag==Tag::Int) return a.i==b.i;
+  if (a.tag==Tag::Num && b.tag==Tag::Num) return a.n==b.n;
+  if (a.tag==Tag::Int && b.tag==Tag::Num) {
+    std::int64_t bi=0;
+    return as_exact_i64(b.n, bi) && a.i==bi;
+  }
+  if (a.tag==Tag::Num && b.tag==Tag::Int) {
+    std::int64_t ai=0;
+    return as_exact_i64(a.n, ai) && ai==b.i;
+  }
+  return false;
+}
+
 static constexpr bool truthy(const Value& v) {
   if (v.tag==Tag::Nil) return false;
   if (v.tag==Tag::Bool) return v.b;
@@ -136,7 +170,11 @@ struct EnvObj {
   TableId env_table{0}; // _ENV
 };
 
-struct UData { TableId mt{0}; };
+struct UData {
+  TableId mt{0};
+  TableId state{0};
+  StrId type_name{};
+};
 
 struct BRange { std::uint32_t off{0}; std::uint16_t n{0}; }; // block stmt-id list
 struct Range  { std::uint32_t off{0}; std::uint16_t n{0}; }; // expr-id / field list
@@ -202,30 +240,32 @@ struct Heap {
   constexpr const Entry* ent(TableId t) const { return entries.data() + tables[t.id].off; }
 
   constexpr std::uint32_t hash_key(const Value& k) const {
-    switch (k.tag) {
-      case Tag::Bool: return mix(k.b ? 0xB001u : 0xB000u);
-      case Tag::Int:  return mix((std::uint32_t)k.i ^ (std::uint32_t)(k.i>>32));
-      case Tag::Num:  { std::int64_t y = (std::int64_t)(k.n * 1000003.0); return mix((std::uint32_t)y ^ (std::uint32_t)(y>>32)); }
-      case Tag::Str:  return mix(sp.hash[k.s.id]);
-      case Tag::Table:return mix(0x71000000u + k.t.id);
-      case Tag::Func: return mix(0x72000000u + k.f.id + (k.f.is_native?123u:0u));
-      case Tag::UData:return mix(0x73000000u + k.u.id);
+    Value key = canonical_table_key(k);
+    switch (key.tag) {
+      case Tag::Bool: return mix(key.b ? 0xB001u : 0xB000u);
+      case Tag::Int:  return mix((std::uint32_t)key.i ^ (std::uint32_t)(key.i>>32));
+      case Tag::Num:  {
+        double n = (key.n==0.0) ? 0.0 : key.n;
+        std::uint64_t bits = std::bit_cast<std::uint64_t>(n);
+        return mix((std::uint32_t)bits ^ (std::uint32_t)(bits>>32));
+      }
+      case Tag::Str:  return mix(sp.hash[key.s.id]);
+      case Tag::Table:return mix(0x71000000u + key.t.id);
+      case Tag::Func: return mix(0x72000000u + key.f.id + (key.f.is_native?123u:0u));
+      case Tag::UData:return mix(0x73000000u + key.u.id);
       case Tag::Nil:  return 0;
     }
     return 1u;
   }
 
   static constexpr bool key_eq(const Value& a, const Value& b) {
-    if (a.tag != b.tag) {
-      if (a.tag==Tag::Int && b.tag==Tag::Num) return (double)a.i == b.n;
-      if (a.tag==Tag::Num && b.tag==Tag::Int) return a.n == (double)b.i;
-      return false;
-    }
+    if (a.tag==Tag::Int || a.tag==Tag::Num || b.tag==Tag::Int || b.tag==Tag::Num) return numeric_eq_exact(a, b);
+    if (a.tag != b.tag) return false;
     switch (a.tag) {
       case Tag::Nil:  return true;
       case Tag::Bool: return a.b==b.b;
-      case Tag::Int:  return a.i==b.i;
-      case Tag::Num:  return a.n==b.n;
+      case Tag::Int:  return false;
+      case Tag::Num:  return false;
       case Tag::Str:  return a.s.id==b.s.id;
       case Tag::Table:return a.t.id==b.t.id;
       case Tag::Func: return a.f.id==b.f.id && a.f.is_native==b.f.is_native;
@@ -236,25 +276,28 @@ struct Heap {
 
   constexpr Value rawget(TableId t, const Value& key) const {
     if (key.tag==Tag::Nil) return Value::nil();
+    Value lookup_key = canonical_table_key(key);
     const TableObj& T = tables[t.id];
     const Entry* es = ent(t);
     std::uint32_t mask = T.cap - 1u;
-    std::uint32_t h = hash_key(key);
+    std::uint32_t h = hash_key(lookup_key);
     for (std::uint32_t probe=0; probe<T.cap; ++probe) {
       std::uint32_t idx=(h+probe)&mask;
       const Entry& e = es[idx];
       if (!e.used) { if (!e.tomb) return Value::nil(); }
-      else if (key_eq(e.k,key)) return e.v;
+      else if (key_eq(e.k,lookup_key)) return e.v;
     }
     return Value::nil();
   }
 
   constexpr void rawset(TableId t, const Value& key, const Value& val) {
     if (key.tag==Tag::Nil) throw "Lua: table index is nil";
+    if (key.tag==Tag::Num && !(key.n==key.n)) throw "Lua: table index is NaN";
+    Value store_key = canonical_table_key(key);
     TableObj& T = tables[t.id];
     Entry* es = ent(t);
     std::uint32_t mask = T.cap - 1u;
-    std::uint32_t h = hash_key(key);
+    std::uint32_t h = hash_key(store_key);
     std::int32_t first_tomb=-1;
 
     for (std::uint32_t probe=0; probe<T.cap; ++probe) {
@@ -265,9 +308,9 @@ struct Heap {
         std::uint32_t put = first_tomb>=0 ? (std::uint32_t)first_tomb : idx;
         Entry& d = es[put];
         if (val.tag==Tag::Nil) { d.used=false; d.tomb=true; return; }
-        d.k=key; d.v=val; d.used=true; d.tomb=false; ++T.size; return;
+        d.k=store_key; d.v=val; d.used=true; d.tomb=false; ++T.size; return;
       }
-      if (key_eq(e.k,key)) {
+      if (key_eq(e.k,store_key)) {
         if (val.tag==Tag::Nil) { e.used=false; e.tomb=true; --T.size; }
         else e.v=val;
         return;
@@ -302,7 +345,9 @@ struct Heap {
     EnvId cur = e;
     for (;;) {
       const EnvObj& E = envs[cur.id];
-      for (std::uint16_t i=0;i<E.n;++i) if (E.b[i].name.id==name.id) return E.b[i].cell;
+      for (std::uint16_t i=E.n; i>0; --i) {
+        if (E.b[i-1].name.id==name.id) return E.b[i-1].cell;
+      }
       if (cur.id==0) break;
       cur = E.outer;
     }
@@ -323,5 +368,11 @@ struct Heap {
     return id;
   }
 
-};
+  constexpr UDataId new_udata(TableId mt, TableId state, StrId type_name) {
+    if (udata_count >= udata.size()) throw "Lua: too many userdata";
+    UDataId id{udata_count++};
+    udata[id.id] = UData{mt, state, type_name};
+    return id;
+  }
 
+};

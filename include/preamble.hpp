@@ -6,11 +6,13 @@
 // No -fexpansion-statements required.
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <concepts>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -38,4 +40,3 @@ struct fixed_string {
 
 // ---------- API exposed to Lua (via reflection) ----------
 namespace api {}
-

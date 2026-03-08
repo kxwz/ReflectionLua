@@ -177,7 +177,7 @@ constexpr Multi VM::nf_utf8_codes(VM& vm, const Value* a, std::size_t n) {
   Multi m{}; m.n=3;
   m.v[0]=vm.mk_native(vm.id_utf8_codes_iter);
   m.v[1]=a[0];
-  m.v[2]=Value::integer(0);
+  m.v[2]=Value::nil();
   return m;
 }
 

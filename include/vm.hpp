@@ -1,19 +1,39 @@
 #pragma once
 
 template <class T>
-concept native_arg_type =
-  std::same_as<std::remove_cvref_t<T>, double> ||
-  std::same_as<std::remove_cvref_t<T>, bool> ||
-  std::same_as<std::remove_cvref_t<T>, std::int64_t> ||
-  std::same_as<std::remove_cvref_t<T>, Value>;
+consteval bool native_value_type_supported() {
+  using U = std::remove_cvref_t<T>;
+  if constexpr (std::same_as<U, Value> || std::same_as<U, bool> || std::same_as<U, std::string_view>) return true;
+  else if constexpr (std::integral<U> && !std::same_as<U, bool>) return true;
+  else if constexpr (std::floating_point<U>) return true;
+  else if constexpr (std::is_enum_v<U>) return meta::has_identifier(^^U);
+  else if constexpr (std::is_class_v<U>) return meta::has_identifier(^^U);
+  else return false;
+}
 
 template <class T>
-concept native_ret_type =
-  std::same_as<std::remove_cvref_t<T>, void> ||
-  std::same_as<std::remove_cvref_t<T>, double> ||
-  std::same_as<std::remove_cvref_t<T>, bool> ||
-  std::same_as<std::remove_cvref_t<T>, std::int64_t> ||
-  std::same_as<std::remove_cvref_t<T>, Value>;
+consteval bool native_arg_type_supported() {
+  if constexpr (std::is_reference_v<T>) {
+    if constexpr (std::is_lvalue_reference_v<T> && !std::is_const_v<std::remove_reference_t<T>>) return false;
+  }
+  return native_value_type_supported<std::remove_cvref_t<T>>();
+}
+
+template <class T>
+consteval bool native_ret_type_supported() {
+  return std::same_as<std::remove_cvref_t<T>, void> || native_value_type_supported<std::remove_cvref_t<T>>();
+}
+
+template <class T>
+consteval bool reflected_field_type_supported() {
+  if constexpr (std::is_reference_v<T>) return false;
+  using U = std::remove_cvref_t<T>;
+  if constexpr (std::same_as<U, bool> || std::same_as<U, std::string_view>) return true;
+  else if constexpr (std::integral<U> && !std::same_as<U, bool>) return true;
+  else if constexpr (std::floating_point<U>) return true;
+  else if constexpr (std::is_enum_v<U>) return meta::has_identifier(^^U);
+  else return false;
+}
 
 // ---------------- VM ----------------
 struct VM {
@@ -28,19 +48,25 @@ struct VM {
 
   // metanames
   StrId s__index{}, s__newindex{}, s__call{}, s__add{}, s__sub{}, s__mul{}, s__div{}, s__idiv{}, s__mod{}, s__pow{};
-  StrId s__unm{}, s__len{}, s__concat{}, s__eq{}, s__lt{}, s__le{}, s__pairs{}, s__tostring{};
+  StrId s__unm{}, s__len{}, s__concat{}, s__eq{}, s__lt{}, s__le{}, s__pairs{}, s__tostring{}, s__metatable{};
   StrId s__band{}, s__bor{}, s__bxor{}, s__shl{}, s__shr{}, s__bnot{};
+  StrId s__ct_methods{}, s__ct_setters{}, s_new{};
 
   std::size_t steps{0};
   constexpr void tick(){ if (++steps > STEP_LIMIT) throw "Lua: step limit exceeded"; }
   std::uint64_t rng_state{0x9E3779B97F4A7C15ull};
 
   struct VarArgs { const Value* p{nullptr}; std::size_t n{0}; };
-  std::array<Value, MAX_ARGS> tmp_args{};
   std::array<char, MAX_PRINT_BYTES> print_buf{};
   std::size_t print_n{0};
   bool print_truncated{false};
   bool warn_enabled{true};
+  std::uint32_t protected_depth{0};
+  const char* pending_error{nullptr};
+
+  std::array<StrId, 256> reflected_type_names{};
+  std::array<TableId, 256> reflected_type_mts{};
+  std::uint32_t reflected_type_count{0};
 
   static constexpr bool is_number(const Value& v){ return v.tag==Tag::Int || v.tag==Tag::Num; }
   static constexpr double to_num(const Value& v){
@@ -76,12 +102,7 @@ struct VM {
   }
 
   static constexpr bool as_exact_i64(double x, std::int64_t& out){
-    if (!(x==x)) return false;
-    if (x < -9223372036854775808.0 || x > 9223372036854775807.0) return false;
-    std::int64_t i=(std::int64_t)x;
-    if ((double)i != x) return false;
-    out=i;
-    return true;
+    return ct_lua54::as_exact_i64(x, out);
   }
 
   static constexpr double exp_num(double x){
@@ -179,6 +200,21 @@ struct VM {
 
   constexpr Value first(const Multi& m){ return m.n? m.v[0] : Value::nil(); }
 
+  template <std::size_t N>
+  constexpr Multi call_with(const Value& callee, const std::array<Value, N>& args, std::size_t argc=N) {
+    return call_value(callee, args.data(), argc);
+  }
+
+  template <std::size_t N>
+  constexpr Value call_with_first(const Value& callee, const std::array<Value, N>& args, std::size_t argc=N) {
+    return first(call_with(callee, args, argc));
+  }
+
+  template <std::size_t N>
+  constexpr bool call_with_truthy(const Value& callee, const std::array<Value, N>& args, std::size_t argc=N) {
+    return truthy(call_with_first(callee, args, argc));
+  }
+
   constexpr void print_append_char(char c){
     if (print_n < print_buf.size()) { print_buf[print_n++]=c; return; }
     print_truncated=true;
@@ -211,8 +247,8 @@ struct VM {
     Value idx=rawget_mt(mt,s__index);
     if (idx.is_nil()) return Value::nil();
     if (idx.tag==Tag::Table) return table_get(idx.t,key);
-    tmp_args[0]=Value::table(t); tmp_args[1]=key;
-    return first(call_value(idx,tmp_args.data(),2));
+    std::array<Value, 2> args{Value::table(t), key};
+    return call_with_first(idx, args);
   }
 
   constexpr bool raw_has_int_key(TableId t, std::int64_t k) const {
@@ -250,35 +286,41 @@ struct VM {
     Value ni=rawget_mt(mt,s__newindex);
     if (ni.is_nil()) { H.rawset(t,key,val); return; }
     if (ni.tag==Tag::Table) { table_set(ni.t,key,val); return; }
-    tmp_args[0]=Value::table(t); tmp_args[1]=key; tmp_args[2]=val;
-    (void)call_value(ni,tmp_args.data(),3);
+    std::array<Value, 3> args{Value::table(t), key, val};
+    (void)call_with(ni, args);
   }
 
   constexpr Value meta_bin(const Value& a, const Value& b, StrId mm, const char* err){
     Value mma=rawget_mt(metatable_of(a),mm);
-    if (!mma.is_nil()) { tmp_args[0]=a; tmp_args[1]=b; return first(call_value(mma,tmp_args.data(),2)); }
+    if (!mma.is_nil()) {
+      std::array<Value, 2> args{a, b};
+      return call_with_first(mma, args);
+    }
     Value mmb=rawget_mt(metatable_of(b),mm);
-    if (!mmb.is_nil()) { tmp_args[0]=a; tmp_args[1]=b; return first(call_value(mmb,tmp_args.data(),2)); }
+    if (!mmb.is_nil()) {
+      std::array<Value, 2> args{a, b};
+      return call_with_first(mmb, args);
+    }
     throw err;
   }
 
   constexpr Value meta_un(const Value& a, StrId mm, const char* err){
     Value mmv=rawget_mt(metatable_of(a),mm);
-    if (!mmv.is_nil()) { tmp_args[0]=a; return first(call_value(mmv,tmp_args.data(),1)); }
+    if (!mmv.is_nil()) {
+      std::array<Value, 1> args{a};
+      return call_with_first(mmv, args);
+    }
     throw err;
   }
 
   static constexpr bool raw_eq_nometa(const Value& a, const Value& b){
-    if (a.tag!=b.tag) {
-      if (a.tag==Tag::Int && b.tag==Tag::Num) return (double)a.i==b.n;
-      if (a.tag==Tag::Num && b.tag==Tag::Int) return a.n==(double)b.i;
-      return false;
-    }
+    if (a.tag==Tag::Int || a.tag==Tag::Num || b.tag==Tag::Int || b.tag==Tag::Num) return numeric_eq_exact(a, b);
+    if (a.tag!=b.tag) return false;
     switch (a.tag) {
       case Tag::Nil:   return true;
       case Tag::Bool:  return a.b==b.b;
-      case Tag::Int:   return a.i==b.i;
-      case Tag::Num:   return a.n==b.n;
+      case Tag::Int:   return false;
+      case Tag::Num:   return false;
       case Tag::Str:   return a.s.id==b.s.id;
       case Tag::Table: return a.t.id==b.t.id;
       case Tag::UData: return a.u.id==b.u.id;
@@ -302,8 +344,8 @@ struct VM {
         Value mmb=rawget_mt(metatable_of(b),s__eq);
         if (mma.is_nil() || mmb.is_nil()) return false;
         if (!raw_eq_nometa(mma,mmb)) return false;
-        tmp_args[0]=a; tmp_args[1]=b;
-        return truthy(first(call_value(mma,tmp_args.data(),2)));
+        std::array<Value, 2> args{a, b};
+        return call_with_truthy(mma, args);
       }
       case Tag::UData: {
         if (a.u.id==b.u.id) return true;
@@ -311,8 +353,8 @@ struct VM {
         Value mmb=rawget_mt(metatable_of(b),s__eq);
         if (mma.is_nil() || mmb.is_nil()) return false;
         if (!raw_eq_nometa(mma,mmb)) return false;
-        tmp_args[0]=a; tmp_args[1]=b;
-        return truthy(first(call_value(mma,tmp_args.data(),2)));
+        std::array<Value, 2> args{a, b};
+        return call_with_truthy(mma, args);
       }
     }
     return false;
@@ -323,7 +365,10 @@ struct VM {
     if (a.tag==Tag::Str && b.tag==Tag::Str) return H.sp.view(a.s) < H.sp.view(b.s);
     Value mmv=rawget_mt(metatable_of(a),s__lt);
     if (mmv.is_nil()) mmv=rawget_mt(metatable_of(b),s__lt);
-    if (!mmv.is_nil()) { tmp_args[0]=a; tmp_args[1]=b; return truthy(first(call_value(mmv,tmp_args.data(),2))); }
+    if (!mmv.is_nil()) {
+      std::array<Value, 2> args{a, b};
+      return call_with_truthy(mmv, args);
+    }
     throw "Lua: attempt to compare";
   }
 
@@ -332,19 +377,26 @@ struct VM {
     if (a.tag==Tag::Str && b.tag==Tag::Str) return !(H.sp.view(b.s) < H.sp.view(a.s));
     Value mmv=rawget_mt(metatable_of(a),s__le);
     if (mmv.is_nil()) mmv=rawget_mt(metatable_of(b),s__le);
-    if (!mmv.is_nil()) { tmp_args[0]=a; tmp_args[1]=b; return truthy(first(call_value(mmv,tmp_args.data(),2))); }
+    if (!mmv.is_nil()) {
+      std::array<Value, 2> args{a, b};
+      return call_with_truthy(mmv, args);
+    }
     return !v_lt(b,a);
   }
 
   constexpr StrId int_to_string(std::int64_t x){
     std::array<char, 32> buf{};
     std::size_t w=0;
-    std::int64_t v=x;
-    bool neg=v<0; if (neg) v=-v;
+    std::uint64_t v=0;
+    if (x<0) {
+      buf[w++]='-';
+      v=(std::uint64_t)(-(x+1)) + 1u;
+    } else {
+      v=(std::uint64_t)x;
+    }
     std::array<char, 32> rev{};
     std::size_t p=0;
-    do { rev[p++]=char('0'+(v%10)); v/=10; } while (v && p<rev.size());
-    if (neg) buf[w++]='-';
+    do { rev[p++]=char('0'+(v%10u)); v/=10u; } while (v && p<rev.size());
     for (std::size_t i=0;i<p;++i) buf[w++]=rev[p-1-i];
     return H.sp.intern(std::string_view(buf.data(), w));
   }
@@ -365,8 +417,8 @@ struct VM {
   constexpr StrId value_tostring(const Value& v){
     Value mmv=rawget_mt(metatable_of(v), s__tostring);
     if (!mmv.is_nil()) {
-      tmp_args[0]=v;
-      Value rv=first(call_value(mmv,tmp_args.data(),1));
+      std::array<Value, 1> args{v};
+      Value rv=call_with_first(mmv, args);
       if (rv.tag!=Tag::Str) throw "Lua: '__tostring' must return a string";
       return rv.s;
     }
@@ -379,7 +431,7 @@ struct VM {
       case Tag::Str:   return v.s;
       case Tag::Table: return H.sp.intern("table");
       case Tag::Func:  return H.sp.intern("function");
-      case Tag::UData: return H.sp.intern("userdata");
+      case Tag::UData: return H.udata[v.u.id].type_name;
     }
     throw "Lua: bad value tag";
   }
@@ -407,7 +459,10 @@ struct VM {
     if (a.tag==Tag::Str) return Value::integer((std::int64_t)H.sp.view(a.s).size());
     TableId mt=metatable_of(a);
     Value mmv=rawget_mt(mt,s__len);
-    if (!mmv.is_nil()) { tmp_args[0]=a; return first(call_value(mmv,tmp_args.data(),1)); }
+    if (!mmv.is_nil()) {
+      std::array<Value, 1> args{a};
+      return call_with_first(mmv, args);
+    }
     if (a.tag==Tag::Table) {
       return Value::integer(raw_len_table(a.t));
     }
@@ -419,34 +474,345 @@ struct VM {
   template <class R, class... Args>
   struct fn_traits<R(Args...)> { using ret=R; using args_tuple=std::tuple<Args...>; static constexpr std::size_t arity=sizeof...(Args); };
 
+  static constexpr std::uint32_t invalid_native_id = UINT32_MAX;
+
+  static constexpr std::uint32_t table_pow2_for(std::size_t min_cap) {
+    std::uint32_t pow2 = 4;
+    std::uint32_t cap = 16;
+    while (cap < min_cap) {
+      if (pow2 >= 30) throw "Lua: reflected table too large";
+      cap <<= 1u;
+      ++pow2;
+    }
+    return pow2;
+  }
+
   template <class T>
-    requires native_arg_type<T>
-  static constexpr std::remove_cvref_t<T> arg_as(VM&, const Value& v) {
+  static consteval std::string_view reflected_type_name_sv() {
     using U = std::remove_cvref_t<T>;
-    if constexpr (std::same_as<U, double>) return to_num(v);
-    else if constexpr (std::same_as<U, bool>) {
+    constexpr auto R = meta::dealias(^^U);
+    static_assert(meta::has_identifier(R), "Lua: reflected type must be named");
+    return meta::identifier_of(R);
+  }
+
+  template <class T>
+  constexpr StrId reflected_type_name() {
+    return H.sp.intern(reflected_type_name_sv<T>());
+  }
+
+  template <class T>
+  constexpr void register_reflected_type(TableId mt) {
+    StrId name = reflected_type_name<T>();
+    for (std::uint32_t i=0;i<reflected_type_count;++i) {
+      if (reflected_type_names[i].id == name.id) throw "Lua: duplicate reflected type name";
+    }
+    if (reflected_type_count >= reflected_type_names.size()) throw "Lua: too many reflected types";
+    reflected_type_names[reflected_type_count] = name;
+    reflected_type_mts[reflected_type_count] = mt;
+    ++reflected_type_count;
+  }
+
+  constexpr TableId reflected_type_mt(StrId name) const {
+    for (std::uint32_t i=0;i<reflected_type_count;++i) {
+      if (reflected_type_names[i].id == name.id) return reflected_type_mts[i];
+    }
+    return TableId{0};
+  }
+
+  template <class T>
+  constexpr TableId reflected_type_mt() {
+    TableId mt = reflected_type_mt(reflected_type_name<T>());
+    if (mt.id==0) throw "Lua: reflected type is not bound";
+    return mt;
+  }
+
+  template <class T>
+  static constexpr T narrow_integer(std::int64_t x) {
+    if constexpr (std::same_as<T, std::int64_t>) {
+      return x;
+    } else if constexpr (std::is_signed_v<T>) {
+      if (x < static_cast<std::int64_t>(std::numeric_limits<T>::min()) ||
+          x > static_cast<std::int64_t>(std::numeric_limits<T>::max())) {
+        throw "Lua: integer out of range";
+      }
+      return static_cast<T>(x);
+    } else {
+      if (x < 0) throw "Lua: integer out of range";
+      using Lim = std::numeric_limits<T>;
+      if (static_cast<std::uint64_t>(x) > static_cast<std::uint64_t>(Lim::max())) {
+        throw "Lua: integer out of range";
+      }
+      return static_cast<T>(x);
+    }
+  }
+
+  template <class T>
+  static constexpr Value value_from_cpp(VM& vm, const T& r) {
+    using U = std::remove_cvref_t<T>;
+    static_assert(native_value_type_supported<U>(), "Lua: unsupported native value type");
+    if constexpr (std::same_as<U, Value>) {
+      return r;
+    } else if constexpr (std::same_as<U, bool>) {
+      return Value::boolean(r);
+    } else if constexpr (std::integral<U> && !std::same_as<U, bool>) {
+      if constexpr (std::is_unsigned_v<U>) {
+        if (static_cast<std::uint64_t>(r) > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+          throw "Lua: integer out of range";
+        }
+      }
+      return Value::integer(static_cast<std::int64_t>(r));
+    } else if constexpr (std::floating_point<U>) {
+      return Value::number(static_cast<double>(r));
+    } else if constexpr (std::same_as<U, std::string_view>) {
+      return Value::string(vm.H.sp.intern(r));
+    } else if constexpr (std::is_enum_v<U>) {
+      using Raw = std::underlying_type_t<U>;
+      return value_from_cpp<Raw>(vm, static_cast<Raw>(r));
+    } else {
+      return make_reflected_object<U>(vm, r);
+    }
+  }
+
+  template <class T>
+  static constexpr std::remove_cvref_t<T> arg_as(VM& vm, const Value& v) {
+    using U = std::remove_cvref_t<T>;
+    static_assert(native_arg_type_supported<T>(), "Lua: unsupported native arg type");
+    if constexpr (std::same_as<U, Value>) {
+      return v;
+    } else if constexpr (std::same_as<U, bool>) {
       if (v.tag!=Tag::Bool) throw "Lua: expected boolean";
       return v.b;
-    } else if constexpr (std::same_as<U, std::int64_t>) {
-      return to_int(v);
+    } else if constexpr (std::integral<U> && !std::same_as<U, bool>) {
+      return narrow_integer<U>(to_int(v));
+    } else if constexpr (std::floating_point<U>) {
+      return static_cast<U>(to_num(v));
+    } else if constexpr (std::same_as<U, std::string_view>) {
+      if (v.tag!=Tag::Str) throw "Lua: expected string";
+      return vm.H.sp.view(v.s);
+    } else if constexpr (std::is_enum_v<U>) {
+      using Raw = std::underlying_type_t<U>;
+      return static_cast<U>(arg_as<Raw>(vm, v));
     } else {
-      return v;
+      return reflected_object_from_value<U>(vm, v);
     }
   }
 
   template <class R>
-    requires (native_ret_type<R> && !std::same_as<std::remove_cvref_t<R>, void>)
-  static constexpr Multi ret_as(VM&, R r) {
+  static constexpr Multi ret_as(VM& vm, R r) {
     using U = std::remove_cvref_t<R>;
-    if constexpr (std::same_as<U, double>) return Multi::one(Value::number((double)r));
-    else if constexpr (std::same_as<U, bool>) return Multi::one(Value::boolean((bool)r));
-    else if constexpr (std::same_as<U, std::int64_t>) return Multi::one(Value::integer((std::int64_t)r));
-    else return Multi::one((Value)r);
+    static_assert(native_ret_type_supported<R>(), "Lua: unsupported native return");
+    if constexpr (std::same_as<U, void>) {
+      return Multi::none();
+    } else {
+      return Multi::one(value_from_cpp<U>(vm, r));
+    }
+  }
+
+  template <meta::info M>
+  static consteval bool bindable_reflected_field_member() {
+    return meta::is_nonstatic_data_member(M) && meta::is_public(M) && meta::has_identifier(M);
+  }
+
+  template <meta::info M>
+  static consteval bool bindable_reflected_method_member() {
+    return meta::is_function(M) &&
+           meta::is_public(M) &&
+           meta::has_identifier(M) &&
+           !meta::is_static_member(M) &&
+           !meta::is_deleted(M) &&
+           !meta::is_operator_function(M) &&
+           !meta::is_conversion_function(M);
+  }
+
+  template <class T, std::size_t I=0>
+  static consteval std::size_t reflected_field_count() {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I >= mems.size()) return 0;
+    else return (bindable_reflected_field_member<mems[I]>() ? 1u : 0u) + reflected_field_count<T, I+1>();
+  }
+
+  template <class T, std::size_t I=0>
+  static consteval std::size_t reflected_method_count() {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I >= mems.size()) return 0;
+    else return (bindable_reflected_method_member<mems[I]>() ? 1u : 0u) + reflected_method_count<T, I+1>();
+  }
+
+  template <meta::info M, std::size_t I=0>
+  static consteval void validate_reflected_method_params() {
+    static constexpr auto params = std::define_static_array(meta::parameters_of(M));
+    if constexpr (I < params.size()) {
+      using P = [:meta::type_of(params[I]):];
+      static_assert(native_arg_type_supported<P>(), "Lua: unsupported reflected method parameter");
+      validate_reflected_method_params<M, I+1>();
+    }
+  }
+
+  template <class T, std::size_t I=0>
+  static consteval void validate_reflected_type_members() {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I < mems.size()) {
+      constexpr auto M = mems[I];
+      if constexpr (bindable_reflected_field_member<M>()) {
+        using FieldT = std::remove_cvref_t<decltype(std::declval<T&>().[:M:])>;
+        static_assert(!meta::is_const(M), "Lua: reflected fields must be writable");
+        static_assert(reflected_field_type_supported<FieldT>(), "Lua: unsupported reflected field type");
+      } else if constexpr (bindable_reflected_method_member<M>()) {
+        using R = [:meta::return_type_of(M):];
+        static_assert(native_ret_type_supported<R>(), "Lua: unsupported reflected method return");
+        validate_reflected_method_params<M>();
+      } else if constexpr (meta::is_nonstatic_data_member(M) && meta::is_public(M) && meta::has_identifier(M)) {
+        static_assert(bindable_reflected_field_member<M>(), "Lua: unsupported reflected field");
+      }
+      validate_reflected_type_members<T, I+1>();
+    }
+  }
+
+  template <class T>
+  static consteval void validate_reflected_type() {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto bases = std::define_static_array(meta::bases_of(^^T, ctx));
+    static_assert(meta::has_identifier(^^T), "Lua: reflected type must be named");
+    static_assert(std::is_default_constructible_v<T>, "Lua: reflected types must be default constructible");
+    static_assert(!meta::has_inaccessible_nonstatic_data_members(^^T, ctx), "Lua: reflected types must expose all data members");
+    static_assert(bases.size() == 0, "Lua: reflected base classes are not supported yet");
+    validate_reflected_type_members<T>();
+  }
+
+  template <class T, std::size_t I=0>
+  static constexpr void object_to_state(VM& vm, const T& obj, TableId state) {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I < mems.size()) {
+      constexpr auto M = mems[I];
+      if constexpr (bindable_reflected_field_member<M>()) {
+        using FieldT = std::remove_cvref_t<decltype(std::declval<T&>().[:M:])>;
+        StrId key = vm.H.sp.intern(meta::identifier_of(M));
+        vm.H.rawset(state, Value::string(key), value_from_cpp<FieldT>(vm, obj.[:M:]));
+      }
+      object_to_state<T, I+1>(vm, obj, state);
+    }
+  }
+
+  template <class T, std::size_t I=0>
+  static constexpr void state_to_object(VM& vm, T& obj, TableId state) {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I < mems.size()) {
+      constexpr auto M = mems[I];
+      if constexpr (bindable_reflected_field_member<M>()) {
+        using FieldT = std::remove_cvref_t<decltype(std::declval<T&>().[:M:])>;
+        StrId key = vm.H.sp.intern(meta::identifier_of(M));
+        obj.[:M:] = arg_as<FieldT>(vm, vm.H.rawget(state, Value::string(key)));
+      }
+      state_to_object<T, I+1>(vm, obj, state);
+    }
+  }
+
+  template <class T>
+  static constexpr Value make_reflected_object(VM& vm, const T& obj) {
+    StrId type_name = vm.reflected_type_name<T>();
+    TableId mt = vm.reflected_type_mt(type_name);
+    if (mt.id==0) throw "Lua: reflected type is not bound";
+    TableId state = vm.H.new_table_pow2(table_pow2_for(reflected_field_count<T>() * 2u + 1u));
+    object_to_state<T>(vm, obj, state);
+    return Value::udata(vm.H.new_udata(mt, state, type_name));
+  }
+
+  template <class T>
+  static constexpr T reflected_object_from_value(VM& vm, const Value& v) {
+    if (v.tag!=Tag::UData) throw "Lua: expected reflected object";
+    StrId expected = vm.reflected_type_name<T>();
+    const UData& ud = vm.H.udata[v.u.id];
+    if (ud.type_name.id != expected.id) throw "Lua: reflected object type mismatch";
+    T obj{};
+    state_to_object<T>(vm, obj, ud.state);
+    return obj;
+  }
+
+  template <class T>
+  static constexpr void sync_reflected_object(VM& vm, const Value& self, const T& obj) {
+    if (self.tag!=Tag::UData) throw "Lua: expected reflected object";
+    UData& ud = vm.H.udata[self.u.id];
+    StrId expected = vm.reflected_type_name<T>();
+    if (ud.type_name.id != expected.id) throw "Lua: reflected object type mismatch";
+    object_to_state<T>(vm, obj, ud.state);
+  }
+
+  template <class T, std::size_t I=0>
+  static constexpr void init_reflected_object_args(VM& vm, T& obj, const Value* a, std::size_t argc, std::size_t& next) {
+    constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(^^T, ctx));
+    if constexpr (I < mems.size()) {
+      constexpr auto M = mems[I];
+      if constexpr (bindable_reflected_field_member<M>()) {
+        using FieldT = std::remove_cvref_t<decltype(std::declval<T&>().[:M:])>;
+        if (next < argc) obj.[:M:] = arg_as<FieldT>(vm, a[next++]);
+      }
+      init_reflected_object_args<T, I+1>(vm, obj, a, argc, next);
+    }
+  }
+
+  template <meta::info T>
+  static constexpr Multi api_ctor_tramp(VM& vm, const Value* a, std::size_t n) {
+    using U = [:T:];
+    std::size_t start = (n > 0 && a[0].tag == Tag::Table) ? 1u : 0u;
+    U obj{};
+    std::size_t used = 0;
+    init_reflected_object_args<U>(vm, obj, a + start, n - start, used);
+    if (used != n - start) throw "Lua: too many reflected constructor args";
+    return Multi::one(make_reflected_object<U>(vm, obj));
+  }
+
+  template <meta::info T, meta::info M>
+  static constexpr Multi api_field_setter_tramp(VM& vm, const Value* a, std::size_t n) {
+    using U = [:T:];
+    using FieldT = std::remove_cvref_t<decltype(std::declval<U&>().[:M:])>;
+    if (n!=2 || a[0].tag!=Tag::UData) throw "Lua: reflected field set expects (self, value)";
+    UData& ud = vm.H.udata[a[0].u.id];
+    StrId expected = vm.reflected_type_name<U>();
+    if (ud.type_name.id != expected.id) throw "Lua: reflected object type mismatch";
+    StrId key = vm.H.sp.intern(meta::identifier_of(M));
+    vm.H.rawset(ud.state, Value::string(key), value_from_cpp<FieldT>(vm, arg_as<FieldT>(vm, a[1])));
+    return Multi::none();
+  }
+
+  template <meta::info T, meta::info M, std::size_t... Is>
+  static constexpr Multi api_method_call_impl(VM& vm, const Value* a, std::index_sequence<Is...>) {
+    using U = [:T:];
+    using R = [:meta::return_type_of(M):];
+    static constexpr auto params = std::define_static_array(meta::parameters_of(M));
+
+    U obj = reflected_object_from_value<U>(vm, a[0]);
+    auto arg = [&]<std::size_t I>() {
+      using P = [:meta::type_of(params[I]):];
+      return arg_as<P>(vm, a[I+1]);
+    };
+
+    if constexpr (std::is_void_v<R>) {
+      obj.[:M:](arg.template operator()<Is>()...);
+      sync_reflected_object<U>(vm, a[0], obj);
+      return Multi::none();
+    } else {
+      R r = obj.[:M:](arg.template operator()<Is>()...);
+      sync_reflected_object<U>(vm, a[0], obj);
+      return ret_as<R>(vm, r);
+    }
+  }
+
+  template <meta::info T, meta::info M>
+  static constexpr Multi api_method_tramp(VM& vm, const Value* a, std::size_t n) {
+    static constexpr auto params = std::define_static_array(meta::parameters_of(M));
+    if (n != params.size() + 1u || a[0].tag!=Tag::UData) throw "Lua: reflected method arity mismatch";
+    return api_method_call_impl<T, M>(vm, a, std::make_index_sequence<params.size()>{});
   }
 
   template <meta::info F, class Tr, class R, std::size_t... Is>
   static constexpr Multi call_wrapped_impl(VM& vm, const Value* args, std::index_sequence<Is...>) {
-    static_assert((native_arg_type<std::tuple_element_t<Is, typename Tr::args_tuple>> && ...),
+    static_assert((native_arg_type_supported<std::tuple_element_t<Is, typename Tr::args_tuple>>() && ...),
       "Lua: unsupported native arg type");
     if constexpr (std::is_void_v<R>) {
       [:F:]( arg_as<std::tuple_element_t<Is, typename Tr::args_tuple>>(vm, args[Is])... );
@@ -463,7 +829,7 @@ struct VM {
     using FnType = std::remove_reference_t<FnRef>;
     using Tr     = fn_traits<FnType>;
     using R      = typename Tr::ret;
-    static_assert(native_ret_type<R>, "Lua: unsupported native return");
+    static_assert(native_ret_type_supported<R>(), "Lua: unsupported native return");
     if (argc != Tr::arity) throw "Lua: arity mismatch (native)";
     return call_wrapped_impl<F, Tr, R>(vm, args, std::make_index_sequence<Tr::arity>{});
   }
@@ -497,6 +863,12 @@ struct VM {
   static constexpr Multi nf_ipairs_iter(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_select(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_tonumber(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_load(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_reflect_udata_index(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_reflect_udata_newindex(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_reflect_udata_tostring(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_reflect_udata_pairs(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_reflect_udata_pairs_iter(VM& vm, const Value* a, std::size_t n);
 
   // --- table module ---
   static constexpr Multi nf_table_insert(VM& vm, const Value* a, std::size_t n);
@@ -537,6 +909,8 @@ struct VM {
   static constexpr Multi nf_string_sub(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_find(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_match(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_gmatch(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_gmatch_iter(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_gsub(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_byte(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_char(VM& vm, const Value* a, std::size_t n);
@@ -545,6 +919,9 @@ struct VM {
   static constexpr Multi nf_string_rep(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_reverse(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_string_format(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_pack(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_packsize(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_string_unpack(VM& vm, const Value* a, std::size_t n);
 
   // --- utf8 module ---
   static constexpr Multi nf_utf8_char(VM& vm, const Value* a, std::size_t n);
@@ -554,9 +931,15 @@ struct VM {
   static constexpr Multi nf_utf8_len(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_utf8_offset(VM& vm, const Value* a, std::size_t n);
 
-  std::uint32_t id_next{0};
-  std::uint32_t id_ipairs_iter{0};
-  std::uint32_t id_utf8_codes_iter{0};
+  std::uint32_t id_next{invalid_native_id};
+  std::uint32_t id_ipairs_iter{invalid_native_id};
+  std::uint32_t id_utf8_codes_iter{invalid_native_id};
+  std::uint32_t id_string_gmatch_iter{invalid_native_id};
+  std::uint32_t id_reflect_udata_index{invalid_native_id};
+  std::uint32_t id_reflect_udata_newindex{invalid_native_id};
+  std::uint32_t id_reflect_udata_tostring{invalid_native_id};
+  std::uint32_t id_reflect_udata_pairs{invalid_native_id};
+  std::uint32_t id_reflect_udata_pairs_iter{invalid_native_id};
 
   // call / eval / exec
   constexpr Multi call_value(const Value& callee, const Value* args, std::size_t argc);
@@ -575,12 +958,112 @@ struct VM {
   template <meta::info F>
   static constexpr Multi api_tramp(VM& vm, const Value* a, std::size_t n) { return call_wrapped<F>(vm,a,n); }
 
+  consteval void bind_api_global(std::string_view name, Value value) {
+    StrId sid = H.sp.intern(name);
+    if (!H.rawget(G, Value::string(sid)).is_nil()) throw "Lua: api global name conflict";
+    table_set(G, Value::string(sid), value);
+  }
+
   template <meta::info F>
-  consteval void bind_one_api() {
-    static_assert(meta::is_function(F) && meta::has_identifier(F), "api must contain only free functions");
+  consteval void bind_one_api_function() {
+    static_assert(meta::is_function(F) && meta::has_identifier(F), "api functions must be named");
     constexpr std::string_view nm = meta::identifier_of(F);
     std::uint32_t id = reg_native(nm, &api_tramp<F>);
-    table_set(G, Value::string(H.sp.intern(nm)), mk_native(id));
+    bind_api_global(nm, mk_native(id));
+  }
+
+  template <meta::info E, std::size_t I=0>
+  consteval void bind_one_api_enum_members(TableId tab) {
+    using U = [:E:];
+    static constexpr auto enums = std::define_static_array(meta::enumerators_of(E));
+    if constexpr (I < enums.size()) {
+      constexpr auto V = enums[I];
+      StrId key = H.sp.intern(meta::identifier_of(V));
+      if (!H.rawget(tab, Value::string(key)).is_nil()) throw "Lua: duplicate enum value name";
+      H.rawset(tab, Value::string(key), value_from_cpp<U>(*this, [:V:]));
+      bind_one_api_enum_members<E, I+1>(tab);
+    }
+  }
+
+  template <meta::info E>
+  consteval void bind_one_api_enum() {
+    static_assert(meta::is_enum_type(E) && meta::has_identifier(E), "api enums must be named");
+    static constexpr auto enums = std::define_static_array(meta::enumerators_of(E));
+    TableId tab = H.new_table_pow2(table_pow2_for(enums.size() * 2u + 1u));
+    bind_one_api_enum_members<E>(tab);
+    bind_api_global(meta::identifier_of(E), Value::table(tab));
+  }
+
+  template <meta::info T, std::size_t I=0>
+  consteval void bind_one_api_type_members(TableId methods, TableId setters) {
+    static constexpr auto ctx = meta::access_context::current();
+    static constexpr auto mems = std::define_static_array(meta::members_of(T, ctx));
+    if constexpr (I < mems.size()) {
+      constexpr auto M = mems[I];
+      if constexpr (bindable_reflected_field_member<M>()) {
+        StrId key = H.sp.intern(meta::identifier_of(M));
+        if (!H.rawget(methods, Value::string(key)).is_nil() || !H.rawget(setters, Value::string(key)).is_nil()) {
+          throw "Lua: duplicate reflected member name";
+        }
+        std::uint32_t id = reg_native(meta::identifier_of(M), &api_field_setter_tramp<T, M>);
+        H.rawset(setters, Value::string(key), mk_native(id));
+      } else if constexpr (bindable_reflected_method_member<M>()) {
+        StrId key = H.sp.intern(meta::identifier_of(M));
+        if (!H.rawget(methods, Value::string(key)).is_nil() || !H.rawget(setters, Value::string(key)).is_nil()) {
+          throw "Lua: duplicate reflected member name";
+        }
+        std::uint32_t id = reg_native(meta::identifier_of(M), &api_method_tramp<T, M>);
+        H.rawset(methods, Value::string(key), mk_native(id));
+      }
+      bind_one_api_type_members<T, I+1>(methods, setters);
+    }
+  }
+
+  template <meta::info T>
+  consteval void bind_one_api_type() {
+    using U = [:T:];
+    static_assert(meta::is_class_type(T) && meta::has_identifier(T), "api reflected types must be named classes");
+    validate_reflected_type<U>();
+
+    static constexpr std::size_t field_count = reflected_field_count<U>();
+    static constexpr std::size_t method_count = reflected_method_count<U>();
+
+    TableId type_table = H.new_table_pow2(table_pow2_for(4));
+    TableId type_mt = H.new_table_pow2(table_pow2_for(2));
+    TableId inst_mt = H.new_table_pow2(table_pow2_for(8));
+    TableId methods = H.new_table_pow2(table_pow2_for(method_count * 2u + 1u));
+    TableId setters = H.new_table_pow2(table_pow2_for(field_count * 2u + 1u));
+
+    constexpr std::string_view nm = meta::identifier_of(T);
+    std::uint32_t ctor_id = reg_native(nm, &api_ctor_tramp<T>);
+    table_set(type_table, Value::string(s_new), mk_native(ctor_id));
+    H.rawset(type_mt, Value::string(s__call), mk_native(ctor_id));
+    H.tables[type_table.id].mt = type_mt;
+
+    H.rawset(inst_mt, Value::string(s__index), mk_native(id_reflect_udata_index));
+    H.rawset(inst_mt, Value::string(s__newindex), mk_native(id_reflect_udata_newindex));
+    H.rawset(inst_mt, Value::string(s__tostring), mk_native(id_reflect_udata_tostring));
+    H.rawset(inst_mt, Value::string(s__pairs), mk_native(id_reflect_udata_pairs));
+    H.rawset(inst_mt, Value::string(s__ct_methods), Value::table(methods));
+    H.rawset(inst_mt, Value::string(s__ct_setters), Value::table(setters));
+
+    bind_one_api_type_members<T>(methods, setters);
+    register_reflected_type<U>(inst_mt);
+    bind_api_global(nm, Value::table(type_table));
+  }
+
+  template <meta::info M>
+  consteval void bind_one_api_member() {
+    if constexpr (meta::is_function(M) && meta::has_identifier(M)) {
+      bind_one_api_function<M>();
+    } else if constexpr (meta::is_class_type(M) && meta::has_identifier(M)) {
+      bind_one_api_type<M>();
+    } else if constexpr (meta::is_enum_type(M) && meta::has_identifier(M)) {
+      bind_one_api_enum<M>();
+    } else if constexpr (meta::has_identifier(M)) {
+      static_assert(meta::is_function(M) || meta::is_class_type(M) || meta::is_enum_type(M),
+        "api namespace may contain only free functions, class types, and enums");
+    }
   }
 
   template <std::size_t I>
@@ -588,7 +1071,7 @@ struct VM {
     constexpr auto ctx = meta::access_context::current();
     static constexpr auto mems = std::define_static_array(meta::members_of(^^api, ctx));
     if constexpr (I < mems.size()) {
-      bind_one_api<mems[I]>();
+      bind_one_api_member<mems[I]>();
       bind_api_rec<I+1>();
     }
   }
@@ -612,16 +1095,20 @@ struct VM {
   consteval void open_api();
   consteval void init(std::uint32_t libs);
   consteval void init() { init(LIB_BASE); }
+  constexpr Value compile_chunk(std::string_view src, TableId env_table);
   constexpr Multi run_chunk(std::string_view src);
 };
 
 // ---- VM impl ----
 constexpr Multi VM::call_value(const Value& callee, const Value* args, std::size_t argc) {
   tick();
+  if (protected_depth && pending_error) return Multi::none();
   if (callee.tag==Tag::Func && callee.f.is_native) {
     auto id=callee.f.id;
     if (id>=native_count) throw "Lua: bad native id";
-    return natives[id](*this,args,argc);
+    Multi ret=natives[id](*this,args,argc);
+    if (protected_depth && pending_error) return Multi::none();
+    return ret;
   }
   if (callee.tag==Tag::Func && !callee.f.is_native) {
     const Closure& C=H.closures[callee.f.id];
@@ -645,6 +1132,7 @@ constexpr Multi VM::call_value(const Value& callee, const Value* args, std::size
     VarArgs va{varbuf.data(), vn};
 
     Exec r=exec_block(P.block, fenv, va);
+    if (protected_depth && pending_error) return Multi::none();
     if (r.is_break) throw "Lua: break outside loop";
     if (r.is_goto) throw "Lua: no visible label for goto";
     return r.has_ret ? r.ret : Multi::none();
@@ -830,8 +1318,8 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
       Value idx=rawget_mt(mt,s__index);
       if (idx.is_nil()) throw "Lua: index on non-table";
       if (idx.tag==Tag::Table) return Multi::one(table_get(idx.t,key));
-      tmp_args[0]=obj; tmp_args[1]=key;
-      return Multi::one(first(call_value(idx,tmp_args.data(),2)));
+      std::array<Value, 2> args{obj, key};
+      return Multi::one(call_with_first(idx, args));
     }
     case EKind::Field: {
       Value obj=first(eval_expr(e.a,env,vargs,false));
@@ -841,19 +1329,20 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
       Value idx=rawget_mt(mt,s__index);
       if (idx.is_nil()) throw "Lua: field on non-table";
       if (idx.tag==Tag::Table) return Multi::one(table_get(idx.t,key));
-      tmp_args[0]=obj; tmp_args[1]=key;
-      return Multi::one(first(call_value(idx,tmp_args.data(),2)));
+      std::array<Value, 2> args{obj, key};
+      return Multi::one(call_with_first(idx, args));
     }
     case EKind::Call: {
       Value fn=first(eval_expr(e.a,env,vargs,false));
+      std::array<Value, MAX_ARGS> args{};
       std::size_t argc=0;
       for (std::uint16_t i=0;i<e.r.n;++i) {
         bool last=(i+1==e.r.n);
         Multi mv=eval_expr(A.list[e.r.off+i],env,vargs,last);
-        if (last && mv.n>1) for (std::uint8_t k=0;k<mv.n && argc<MAX_ARGS;++k) tmp_args[argc++]=mv.v[k];
-        else tmp_args[argc++]=first(mv);
+        if (last && mv.n>1) for (std::uint8_t k=0;k<mv.n && argc<MAX_ARGS;++k) args[argc++]=mv.v[k];
+        else args[argc++]=first(mv);
       }
-      Multi ret=call_value(fn,tmp_args.data(),argc);
+      Multi ret=call_value(fn,args.data(),argc);
       return multret ? ret : Multi::one(first(ret));
     }
     case EKind::Method: {
@@ -864,17 +1353,21 @@ constexpr Multi VM::eval_expr(ExprId id, EnvId env, VarArgs vargs, bool multret)
         TableId mt=metatable_of(obj);
         Value idx=rawget_mt(mt,s__index);
         if (idx.tag==Tag::Table) mfn=table_get(idx.t,Value::string(e.s));
-        else { tmp_args[0]=obj; tmp_args[1]=Value::string(e.s); mfn=first(call_value(idx,tmp_args.data(),2)); }
+        else {
+          std::array<Value, 2> recv_args{obj, Value::string(e.s)};
+          mfn=call_with_first(idx, recv_args);
+        }
       }
+      std::array<Value, MAX_ARGS> args{};
       std::size_t argc=0;
-      tmp_args[argc++]=obj;
+      args[argc++]=obj;
       for (std::uint16_t i=0;i<e.r.n;++i) {
         bool last=(i+1==e.r.n);
         Multi mv=eval_expr(A.list[e.r.off+i],env,vargs,last);
-        if (last && mv.n>1) for (std::uint8_t k=0;k<mv.n && argc<MAX_ARGS;++k) tmp_args[argc++]=mv.v[k];
-        else tmp_args[argc++]=first(mv);
+        if (last && mv.n>1) for (std::uint8_t k=0;k<mv.n && argc<MAX_ARGS;++k) args[argc++]=mv.v[k];
+        else args[argc++]=first(mv);
       }
-      Multi ret=call_value(mfn,tmp_args.data(),argc);
+      Multi ret=call_value(mfn,args.data(),argc);
       return multret ? ret : Multi::one(first(ret));
     }
   }
@@ -914,8 +1407,10 @@ constexpr VM::Exec VM::exec_block(BRange blk, EnvId env, VarArgs vargs) {
   std::uint16_t pc=0;
   while (pc<blk.n) {
     tick();
+    if (protected_depth && pending_error) return ex;
     StmtId sid = A.blist[blk.off + pc];
     Exec r=exec_stmt(A.st[sid],env,vargs);
+    if (protected_depth && pending_error) return ex;
     if (r.has_ret || r.is_break) return r;
     if (r.is_goto) {
       bool found=false;
@@ -1026,8 +1521,8 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
       }
 
       for (;;) {
-        tmp_args[0]=st; tmp_args[1]=var;
-        Multi r=call_value(f,tmp_args.data(),2);
+        std::array<Value, 2> args{st, var};
+        Multi r=call_value(f,args.data(),2);
         Value a0 = r.n? r.v[0] : Value::nil();
         var=a0;
         if (a0.is_nil()) break;
@@ -1125,7 +1620,10 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
             Value ni=rawget_mt(mt,s__newindex);
             if (ni.is_nil()) throw "Lua: set index on non-table";
             if (ni.tag==Tag::Table) table_set(ni.t,t.key,val);
-            else { tmp_args[0]=t.obj; tmp_args[1]=t.key; tmp_args[2]=val; (void)call_value(ni,tmp_args.data(),3); }
+            else {
+              std::array<Value, 3> args{t.obj, t.key, val};
+              (void)call_value(ni,args.data(),3);
+            }
           }
         }
       }
@@ -1151,7 +1649,10 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
           Value ni=rawget_mt(mt,s__newindex);
           if (ni.is_nil()) throw "Lua: set field on non-table";
           if (ni.tag==Tag::Table) table_set(ni.t,key,fn);
-          else { tmp_args[0]=obj; tmp_args[1]=key; tmp_args[2]=fn; (void)call_value(ni,tmp_args.data(),3); }
+          else {
+            std::array<Value, 3> args{obj, key, fn};
+            (void)call_value(ni,args.data(),3);
+          }
         }
       } else if (lhs.k==EKind::Index) {
         Value obj=first(eval_expr(lhs.a,env,vargs,false));
@@ -1162,7 +1663,10 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
           Value ni=rawget_mt(mt,s__newindex);
           if (ni.is_nil()) throw "Lua: set index on non-table";
           if (ni.tag==Tag::Table) table_set(ni.t,key,fn);
-          else { tmp_args[0]=obj; tmp_args[1]=key; tmp_args[2]=fn; (void)call_value(ni,tmp_args.data(),3); }
+          else {
+            std::array<Value, 3> args{obj, key, fn};
+            (void)call_value(ni,args.data(),3);
+          }
         }
       } else throw "Lua: invalid function name";
       return ex;
@@ -1219,6 +1723,10 @@ consteval void VM::init(std::uint32_t libs) {
   s__le      = H.sp.intern("__le");
   s__pairs   = H.sp.intern("__pairs");
   s__tostring= H.sp.intern("__tostring");
+  s__metatable = H.sp.intern("__metatable");
+  s__ct_methods = H.sp.intern("__ct_methods");
+  s__ct_setters = H.sp.intern("__ct_setters");
+  s_new      = H.sp.intern("new");
 
   G=H.new_table_pow2(8);
   H.envs[0].env_table=G;
@@ -1231,11 +1739,15 @@ consteval void VM::init(std::uint32_t libs) {
   if (libs & LIB_API)  open_api();
 }
 
-constexpr Multi VM::run_chunk(std::string_view src) {
+constexpr Value VM::compile_chunk(std::string_view src, TableId env_table) {
   Parser P(H,A,src);
   ProtoId mainp=P.parse_chunk();
-  std::uint32_t cid=H.new_closure(mainp,EnvId{0},G);
-  Value mainf=Value::func_closure(cid);
+  std::uint32_t cid=H.new_closure(mainp,EnvId{0},env_table);
+  return Value::func_closure(cid);
+}
+
+constexpr Multi VM::run_chunk(std::string_view src) {
+  Value mainf=compile_chunk(src, G);
   return call_value(mainf,nullptr,0);
 }
 

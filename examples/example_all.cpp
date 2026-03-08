@@ -21,6 +21,32 @@ if type(tonumber) ~= "function" then return 110 end
 if type(pcall) ~= "function" then return 111 end
 if type(xpcall) ~= "function" then return 112 end
 if type(warn) ~= "function" then return 113 end
+if type(load) ~= "function" then return 114 end
+if _G ~= _G._G then return 115 end
+if _VERSION ~= "Lua 5.4" then return 116 end
+
+do
+  local y = 9
+  _G.y = y
+  local f, e = load("return y + 1")
+  if type(f) ~= "function" or e ~= nil or f() ~= 10 then return 117 end
+end
+
+do
+  local env = { x = 41 }
+  local f, e = load("x = x + 1; return x", "inc", "t", env)
+  if type(f) ~= "function" or e ~= nil or f() ~= 42 or env.x ~= 42 then return 118 end
+end
+
+do
+  local f, e = load("local =")
+  if f ~= nil or type(e) ~= "string" then return 119 end
+end
+
+do
+  local f, e = load("return 1", nil, "b")
+  if f ~= nil or type(e) ~= "string" then return 121 end
+end
 
 do
   local ok, v = pcall(function()
