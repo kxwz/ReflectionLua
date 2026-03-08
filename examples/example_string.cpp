@@ -1,6 +1,9 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_string = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto string_runtime = ct_lua54::interpreter()
+  .with_libraries<ct_lua54::LIB_BASE | ct_lua54::LIB_STRING>();
+
+constexpr double r_string = string_runtime.run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -155,7 +158,7 @@ CHECK(not okps and string.find(errps, "variable-length format", 1, true), "strin
 EQ(("abc"):upper(), "ABC", "string metatable index")
 
 return 1
-)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_STRING>();
+)lua"}>();
 
 static_assert(r_string == 1.0, "string example failed");
 

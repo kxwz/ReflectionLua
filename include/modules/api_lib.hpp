@@ -48,13 +48,12 @@ constexpr Multi VM::nf_reflect_udata_pairs_iter(VM& vm, const Value* a, std::siz
   return VM::nf_next(vm, a, n);
 }
 
-consteval void VM::open_api() {
+consteval void VM::open_api_support() {
   id_reflect_udata_index = reg_native("api._udata_index", &VM::nf_reflect_udata_index);
   id_reflect_udata_newindex = reg_native("api._udata_newindex", &VM::nf_reflect_udata_newindex);
   id_reflect_udata_tostring = reg_native("api._udata_tostring", &VM::nf_reflect_udata_tostring);
   id_reflect_udata_pairs = reg_native("api._udata_pairs", &VM::nf_reflect_udata_pairs);
   id_reflect_udata_pairs_iter = reg_native("api._udata_pairs_iter", &VM::nf_reflect_udata_pairs_iter);
-  bind_api_namespace();
 }
 
 } // namespace ct_lua54

@@ -1,6 +1,8 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_all = ct_lua54::run_number<
+constexpr auto all_runtime = ct_lua54::interpreter().with_libraries<ct_lua54::LIB_ALL>();
+
+constexpr double r_all = all_runtime.run_number<
   fixed_string{R"lua(
 if rawequal(1, 1.0) ~= true then return 103 end
 if rawequal({}, {}) ~= false then return 104 end
@@ -141,8 +143,7 @@ do
 end
 
 return 1
-)lua"},
-  ct_lua54::LIB_ALL
+)lua"}
 >();
 
 template <int Code>

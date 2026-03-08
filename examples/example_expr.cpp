@@ -1,6 +1,8 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_expr = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto expr_runtime = ct_lua54::interpreter().with_libraries<ct_lua54::LIB_BASE>();
+
+constexpr double r_expr = expr_runtime.run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -66,10 +68,9 @@ EQ(0 and 9, 9, "truthy 0")
 EQ(not nil, true, "not")
 
 return 1
-)lua"}, ct_lua54::LIB_BASE>();
+)lua"}>();
 
 static_assert(r_expr == 1.0, "expr example failed");
 
 int main() { return 0; }
-
 

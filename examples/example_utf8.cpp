@@ -1,6 +1,9 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_utf8 = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto utf8_runtime = ct_lua54::interpreter()
+  .with_libraries<ct_lua54::LIB_BASE | ct_lua54::LIB_UTF8>();
+
+constexpr double r_utf8 = utf8_runtime.run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -38,7 +41,7 @@ EQ(utf8.offset(s, 0, 3), 2, "utf8.offset 0")
 CHECK(utf8.charpattern ~= nil, "utf8.charpattern")
 
 return 1
-)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_UTF8>();
+)lua"}>();
 
 static_assert(r_utf8 == 1.0, "utf8 example failed");
 

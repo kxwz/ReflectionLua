@@ -1,6 +1,9 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_regressions = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto regressions_runtime = ct_lua54::interpreter()
+  .with_libraries<ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+
+constexpr double r_regressions = regressions_runtime.run_number<fixed_string{R"lua(
 local function keep(a, b, c, d)
   if a ~= "A" then return 201 end
   if b ~= 1 then return 202 end
@@ -53,7 +56,7 @@ do
 end
 
 return 1
-)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+)lua"}>();
 
 static_assert(r_regressions == 1.0, "regression example failed");
 

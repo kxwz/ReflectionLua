@@ -35,7 +35,11 @@ constexpr bool is_blue(Color c) {
 
 } // namespace api
 
-constexpr double r_api = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto api_runtime = ct_lua54::interpreter()
+  .with_libraries<ct_lua54::LIB_BASE | ct_lua54::LIB_API>()
+  .with_namespace<^^api>();
+
+constexpr double r_api = api_runtime.run_number<fixed_string{R"lua(
 local v = Vec2(3, 4)
 if type(v) ~= "userdata" then return 101 end
 if tostring(v) ~= "Vec2" then return 102 end
@@ -63,7 +67,7 @@ v.x = 9
 if v:sum() ~= 15 then return 112 end
 
 return 1
-)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_API>();
+)lua"}>();
 
 static_assert(r_api == 1.0, "api reflection example failed");
 

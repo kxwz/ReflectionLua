@@ -1,6 +1,9 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_math = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto math_runtime = ct_lua54::interpreter()
+  .with_libraries<ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+
+constexpr double r_math = math_runtime.run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -62,10 +65,9 @@ EQ(i1, i2, "randomseed int repeat")
 EQ(j1, j2, "randomseed int2 repeat")
 
 return 1
-)lua"}, ct_lua54::LIB_BASE | ct_lua54::LIB_MATH>();
+)lua"}>();
 
 static_assert(r_math == 1.0, "math example failed");
 
 int main() { return 0; }
-
 

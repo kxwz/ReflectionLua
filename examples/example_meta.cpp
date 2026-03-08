@@ -1,6 +1,8 @@
 #include "ct_lua54.hpp"
 
-constexpr double r_meta = ct_lua54::run_number<fixed_string{R"lua(
+constexpr auto meta_runtime = ct_lua54::interpreter().with_libraries<ct_lua54::LIB_BASE>();
+
+constexpr double r_meta = meta_runtime.run_number<fixed_string{R"lua(
 local function FAIL(msg) __THIS_FUNCTION_DOES_NOT_EXIST__(msg) end
 local function CHECK(c,msg) if not c then FAIL(msg) end end
 local function EQ(a,b,msg) if a ~= b then FAIL(msg) end end
@@ -105,11 +107,11 @@ EQ(BW >> 1, 15, "__shr")
 EQ(~BW, 16, "__bnot")
 
 return 1
-)lua"}, ct_lua54::LIB_BASE>();
+)lua"}>();
 
 static_assert(r_meta == 1.0, "meta example failed");
 
-constexpr double r_meta_protected_clear = ct_lua54::run_number<fixed_string{R"lua(
+constexpr double r_meta_protected_clear = meta_runtime.run_number<fixed_string{R"lua(
 local mt = { __index = { z = 7 }, __metatable = "locked" }
 local obj = setmetatable({}, mt)
 local ok, e = pcall(function() setmetatable(obj, nil) end)
@@ -117,7 +119,7 @@ if ok ~= false or type(e) ~= "string" then return 1 end
 if getmetatable(obj) ~= "locked" then return 2 end
 if obj.z ~= 7 then return 3 end
 return 0
-)lua"}, ct_lua54::LIB_BASE>();
+)lua"}>();
 
 static_assert(r_meta_protected_clear == 0.0, "protected metatable clear failed");
 

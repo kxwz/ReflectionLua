@@ -1066,17 +1066,20 @@ struct VM {
     }
   }
 
-  template <std::size_t I>
-  consteval void bind_api_rec() {
+  template <meta::info Ns, std::size_t I>
+  consteval void bind_namespace_rec() {
     constexpr auto ctx = meta::access_context::current();
-    static constexpr auto mems = std::define_static_array(meta::members_of(^^api, ctx));
+    static constexpr auto mems = std::define_static_array(meta::members_of(Ns, ctx));
     if constexpr (I < mems.size()) {
       bind_one_api_member<mems[I]>();
-      bind_api_rec<I+1>();
+      bind_namespace_rec<Ns, I+1>();
     }
   }
 
-  consteval void bind_api_namespace() { bind_api_rec<0>(); }
+  template <meta::info Ns>
+  consteval void bind_namespace() { bind_namespace_rec<Ns, 0>(); }
+
+  consteval void bind_api_namespace() { bind_namespace<^^api>(); }
 
   // init/run
   static constexpr std::uint32_t LIB_BASE = 1u << 0;
@@ -1092,7 +1095,8 @@ struct VM {
   consteval void open_math();
   consteval void open_string();
   consteval void open_utf8();
-  consteval void open_api();
+  consteval void open_api_support();
+  consteval void init_runtime(std::uint32_t libs);
   consteval void init(std::uint32_t libs);
   consteval void init() { init(LIB_BASE); }
   constexpr Value compile_chunk(std::string_view src, TableId env_table);
@@ -1694,7 +1698,7 @@ constexpr VM::Exec VM::exec_stmt(const Stmt& s, EnvId env, VarArgs vargs) {
   throw "Lua: missing stmt kind";
 }
 
-consteval void VM::init(std::uint32_t libs) {
+consteval void VM::init_runtime(std::uint32_t libs) {
   H.env_count=1;
   H.envs[0]=EnvObj{};
   H.envs[0].outer=EnvId{0};
@@ -1736,7 +1740,12 @@ consteval void VM::init(std::uint32_t libs) {
   if (libs & LIB_MATH) open_math();
   if (libs & LIB_STRING) open_string();
   if (libs & LIB_UTF8) open_utf8();
-  if (libs & LIB_API)  open_api();
+  if (libs & LIB_API)  open_api_support();
+}
+
+consteval void VM::init(std::uint32_t libs) {
+  init_runtime(libs);
+  if (libs & LIB_API) bind_api_namespace();
 }
 
 constexpr Value VM::compile_chunk(std::string_view src, TableId env_table) {
@@ -1759,34 +1768,84 @@ struct RunCapture {
   bool print_truncated{false};
 };
 
-template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
-consteval RunCapture run_capture() {
-  VM vm;
-  vm.init(Libs);
-  Multi r=vm.run_chunk(Script.view());
+template <std::uint32_t Libs = 0u, meta::info... Namespaces>
+struct Interpreter {
+  static constexpr std::uint32_t libs = Libs;
 
-  RunCapture out{};
-  out.value = r.n? r.v[0] : Value::nil();
-  out.print_n = vm.print_n;
-  out.print_truncated = vm.print_truncated;
-  for (std::size_t i=0;i<vm.print_n;++i) out.print[i]=vm.print_buf[i];
-  return out;
-}
+  template <std::uint32_t MoreLibs>
+  consteval auto with_libraries() const -> Interpreter<Libs | MoreLibs, Namespaces...> { return {}; }
 
-template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
-consteval Value run1() {
-  VM vm;
-  vm.init(Libs);
-  Multi r=vm.run_chunk(Script.view());
-  return r.n? r.v[0] : Value::nil();
-}
+  template <std::uint32_t MoreLibs>
+  consteval auto with_mask() const -> Interpreter<Libs | MoreLibs, Namespaces...> { return {}; }
 
-template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
-consteval double run_number() {
-  Value v=run1<Script, Libs>();
-  if (v.tag==Tag::Num) return v.n;
-  if (v.tag==Tag::Int) return (double)v.i;
-  throw "Lua: expected numeric result";
+  consteval auto with_base() const -> Interpreter<Libs | VM::LIB_BASE, Namespaces...> { return with_libraries<VM::LIB_BASE>(); }
+  consteval auto with_api() const -> Interpreter<Libs | VM::LIB_API, Namespaces...> { return with_libraries<VM::LIB_API>(); }
+  consteval auto with_table() const -> Interpreter<Libs | VM::LIB_TABLE, Namespaces...> { return with_libraries<VM::LIB_TABLE>(); }
+  consteval auto with_math() const -> Interpreter<Libs | VM::LIB_MATH, Namespaces...> { return with_libraries<VM::LIB_MATH>(); }
+  consteval auto with_string() const -> Interpreter<Libs | VM::LIB_STRING, Namespaces...> { return with_libraries<VM::LIB_STRING>(); }
+  consteval auto with_utf8() const -> Interpreter<Libs | VM::LIB_UTF8, Namespaces...> { return with_libraries<VM::LIB_UTF8>(); }
+  consteval auto with_all() const -> Interpreter<Libs | VM::LIB_ALL, Namespaces...> { return with_libraries<VM::LIB_ALL>(); }
+
+  template <meta::info Ns>
+  consteval auto with_namespace() const -> Interpreter<Libs | VM::LIB_API, Namespaces..., Ns> { return {}; }
+
+  static consteval void configure(VM& vm) {
+    vm.init_runtime(Libs);
+    if constexpr (sizeof...(Namespaces) != 0) {
+      static_assert((Libs & VM::LIB_API) != 0u, "Lua: interpreter namespace bindings require LIB_API");
+      (vm.bind_namespace<Namespaces>(), ...);
+    }
+  }
+
+  template <fixed_string Script>
+  consteval RunCapture run_capture() const {
+    VM vm;
+    configure(vm);
+    Multi r=vm.run_chunk(Script.view());
+
+    RunCapture out{};
+    out.value = r.n? r.v[0] : Value::nil();
+    out.print_n = vm.print_n;
+    out.print_truncated = vm.print_truncated;
+    for (std::size_t i=0;i<vm.print_n;++i) out.print[i]=vm.print_buf[i];
+    return out;
+  }
+
+  template <fixed_string Script>
+  consteval RunCapture run() const {
+    return run_capture<Script>();
+  }
+
+  template <fixed_string Script>
+  consteval Value run1() const {
+    VM vm;
+    configure(vm);
+    Multi r=vm.run_chunk(Script.view());
+    return r.n? r.v[0] : Value::nil();
+  }
+
+  template <fixed_string Script>
+  consteval double run_number() const {
+    Value v=run1<Script>();
+    if (v.tag==Tag::Num) return v.n;
+    if (v.tag==Tag::Int) return (double)v.i;
+    throw "Lua: expected numeric result";
+  }
+
+  template <fixed_string Script>
+  static inline void print_buffer() {
+    constexpr RunCapture out = Interpreter<Libs, Namespaces...>{}.template run_capture<Script>();
+    if (out.print_n) {
+      std::cout.write(out.print.data(), static_cast<std::streamsize>(out.print_n));
+    }
+    if (out.print_truncated) {
+      std::cout << "[ct_lua54] print buffer truncated\n";
+    }
+  }
+};
+
+consteval auto interpreter() {
+  return Interpreter<>{};
 }
 
 inline void print_buffer(const RunCapture& out) {
@@ -1799,12 +1858,18 @@ inline void print_buffer(const RunCapture& out) {
 }
 
 template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
-inline void print_buffer() {
-  constexpr RunCapture out = run_capture<Script, Libs>();
-  print_buffer(out);
-}
+consteval RunCapture run_capture() = delete;
 
-// Library masks for run1/run_number, e.g. run_number<script, LIB_ALL>().
+template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
+consteval Value run1() = delete;
+
+template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
+consteval double run_number() = delete;
+
+template <fixed_string Script, std::uint32_t Libs = VM::LIB_BASE>
+inline void print_buffer() = delete;
+
+// Library masks for interpreter().with_libraries<...>().
 inline constexpr std::uint32_t LIB_BASE = VM::LIB_BASE;
 inline constexpr std::uint32_t LIB_API  = VM::LIB_API;
 inline constexpr std::uint32_t LIB_TABLE= VM::LIB_TABLE;
