@@ -37,6 +37,11 @@ consteval bool reflected_field_type_supported() {
 
 // ---------------- VM ----------------
 struct VM {
+  struct EmbeddedModule {
+    StrId name{};
+    StrId source{};
+  };
+
   Heap H{};
   Arena A{};
 
@@ -50,7 +55,7 @@ struct VM {
   StrId s__index{}, s__newindex{}, s__call{}, s__add{}, s__sub{}, s__mul{}, s__div{}, s__idiv{}, s__mod{}, s__pow{};
   StrId s__unm{}, s__len{}, s__concat{}, s__eq{}, s__lt{}, s__le{}, s__pairs{}, s__tostring{}, s__metatable{};
   StrId s__band{}, s__bor{}, s__bxor{}, s__shl{}, s__shr{}, s__bnot{};
-  StrId s__ct_methods{}, s__ct_setters{}, s_new{};
+  StrId s__ct_methods{}, s__ct_setters{}, s_new{}, s_loaded{}, s_preload{}, s_searchers{};
 
   std::size_t steps{0};
   constexpr void tick(){ if (++steps > STEP_LIMIT) throw "Lua: step limit exceeded"; }
@@ -67,6 +72,12 @@ struct VM {
   std::array<StrId, 256> reflected_type_names{};
   std::array<TableId, 256> reflected_type_mts{};
   std::uint32_t reflected_type_count{0};
+
+  TableId package_table{};
+  TableId package_loading_sentinel{};
+
+  std::array<EmbeddedModule, MAX_EMBEDDED_MODULES> embedded_modules{};
+  std::uint32_t embedded_module_count{0};
 
   static constexpr bool is_number(const Value& v){ return v.tag==Tag::Int || v.tag==Tag::Num; }
   static constexpr double to_num(const Value& v){
@@ -519,6 +530,47 @@ struct VM {
     return TableId{0};
   }
 
+  consteval void register_embedded_module(std::string_view name, std::string_view source) {
+    StrId name_id = H.sp.intern(name);
+    for (std::uint32_t i=0;i<embedded_module_count;++i) {
+      if (embedded_modules[i].name.id == name_id.id) throw "Lua: duplicate embedded module name";
+    }
+    if (embedded_module_count >= embedded_modules.size()) throw "Lua: too many embedded modules";
+    embedded_modules[embedded_module_count++] = EmbeddedModule{name_id, H.sp.intern(source)};
+  }
+
+  constexpr bool find_embedded_module_source(StrId name, StrId& source) const {
+    for (std::uint32_t i=0;i<embedded_module_count;++i) {
+      if (embedded_modules[i].name.id == name.id) {
+        source = embedded_modules[i].source;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  constexpr TableId package_subtable(StrId key, const char* err) {
+    Value v = H.rawget(package_table, Value::string(key));
+    if (v.tag != Tag::Table) throw err;
+    return v.t;
+  }
+
+  constexpr TableId package_loaded_table() {
+    return package_subtable(s_loaded, "Lua: package.loaded must be a table");
+  }
+
+  constexpr TableId package_preload_table() {
+    return package_subtable(s_preload, "Lua: package.preload must be a table");
+  }
+
+  constexpr TableId package_searchers_table() {
+    return package_subtable(s_searchers, "Lua: package.searchers must be a table");
+  }
+
+  constexpr bool is_package_loading_sentinel(const Value& v) const {
+    return v.tag == Tag::Table && v.t.id == package_loading_sentinel.id;
+  }
+
   template <class T>
   constexpr TableId reflected_type_mt() {
     TableId mt = reflected_type_mt(reflected_type_name<T>());
@@ -864,6 +916,9 @@ struct VM {
   static constexpr Multi nf_select(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_tonumber(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_load(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_require(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_package_searcher_preload(VM& vm, const Value* a, std::size_t n);
+  static constexpr Multi nf_package_searcher_embedded(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_reflect_udata_index(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_reflect_udata_newindex(VM& vm, const Value* a, std::size_t n);
   static constexpr Multi nf_reflect_udata_tostring(VM& vm, const Value* a, std::size_t n);
@@ -933,6 +988,8 @@ struct VM {
 
   std::uint32_t id_next{invalid_native_id};
   std::uint32_t id_ipairs_iter{invalid_native_id};
+  std::uint32_t id_package_searcher_preload{invalid_native_id};
+  std::uint32_t id_package_searcher_embedded{invalid_native_id};
   std::uint32_t id_utf8_codes_iter{invalid_native_id};
   std::uint32_t id_string_gmatch_iter{invalid_native_id};
   std::uint32_t id_reflect_udata_index{invalid_native_id};
@@ -1088,13 +1145,15 @@ struct VM {
   static constexpr std::uint32_t LIB_MATH = 1u << 3;
   static constexpr std::uint32_t LIB_STRING = 1u << 4;
   static constexpr std::uint32_t LIB_UTF8 = 1u << 5;
-  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH | LIB_STRING | LIB_UTF8;
+  static constexpr std::uint32_t LIB_PACKAGE = 1u << 6;
+  static constexpr std::uint32_t LIB_ALL  = LIB_BASE | LIB_API | LIB_TABLE | LIB_MATH | LIB_STRING | LIB_UTF8 | LIB_PACKAGE;
 
   consteval void open_base();
   consteval void open_table();
   consteval void open_math();
   consteval void open_string();
   consteval void open_utf8();
+  consteval void open_package();
   consteval void open_api_support();
   consteval void init_runtime(std::uint32_t libs);
   consteval void init(std::uint32_t libs);
@@ -1731,6 +1790,9 @@ consteval void VM::init_runtime(std::uint32_t libs) {
   s__ct_methods = H.sp.intern("__ct_methods");
   s__ct_setters = H.sp.intern("__ct_setters");
   s_new      = H.sp.intern("new");
+  s_loaded   = H.sp.intern("loaded");
+  s_preload  = H.sp.intern("preload");
+  s_searchers= H.sp.intern("searchers");
 
   G=H.new_table_pow2(8);
   H.envs[0].env_table=G;
@@ -1740,6 +1802,7 @@ consteval void VM::init_runtime(std::uint32_t libs) {
   if (libs & LIB_MATH) open_math();
   if (libs & LIB_STRING) open_string();
   if (libs & LIB_UTF8) open_utf8();
+  if (libs & LIB_PACKAGE) open_package();
   if (libs & LIB_API)  open_api_support();
 }
 
@@ -1768,29 +1831,59 @@ struct RunCapture {
   bool print_truncated{false};
 };
 
-template <std::uint32_t Libs = 0u, meta::info... Namespaces>
+template <fixed_string Name, fixed_string Source>
+struct EmbeddedModuleSpec {
+  static constexpr auto name = Name;
+  static constexpr auto source = Source;
+};
+
+template <class... Specs>
+struct ModuleList {};
+
+template <class List, class Spec>
+struct ModuleListAppend;
+
+template <class... Specs, class Spec>
+struct ModuleListAppend<ModuleList<Specs...>, Spec> {
+  using type = ModuleList<Specs..., Spec>;
+};
+
+template <std::uint32_t Libs = 0u, class Modules = ModuleList<>, meta::info... Namespaces>
 struct Interpreter {
   static constexpr std::uint32_t libs = Libs;
 
   template <std::uint32_t MoreLibs>
-  consteval auto with_libraries() const -> Interpreter<Libs | MoreLibs, Namespaces...> { return {}; }
+  consteval auto with_libraries() const -> Interpreter<Libs | MoreLibs, Modules, Namespaces...> { return {}; }
 
   template <std::uint32_t MoreLibs>
-  consteval auto with_mask() const -> Interpreter<Libs | MoreLibs, Namespaces...> { return {}; }
+  consteval auto with_mask() const -> Interpreter<Libs | MoreLibs, Modules, Namespaces...> { return {}; }
 
-  consteval auto with_base() const -> Interpreter<Libs | VM::LIB_BASE, Namespaces...> { return with_libraries<VM::LIB_BASE>(); }
-  consteval auto with_api() const -> Interpreter<Libs | VM::LIB_API, Namespaces...> { return with_libraries<VM::LIB_API>(); }
-  consteval auto with_table() const -> Interpreter<Libs | VM::LIB_TABLE, Namespaces...> { return with_libraries<VM::LIB_TABLE>(); }
-  consteval auto with_math() const -> Interpreter<Libs | VM::LIB_MATH, Namespaces...> { return with_libraries<VM::LIB_MATH>(); }
-  consteval auto with_string() const -> Interpreter<Libs | VM::LIB_STRING, Namespaces...> { return with_libraries<VM::LIB_STRING>(); }
-  consteval auto with_utf8() const -> Interpreter<Libs | VM::LIB_UTF8, Namespaces...> { return with_libraries<VM::LIB_UTF8>(); }
-  consteval auto with_all() const -> Interpreter<Libs | VM::LIB_ALL, Namespaces...> { return with_libraries<VM::LIB_ALL>(); }
+  consteval auto with_base() const -> Interpreter<Libs | VM::LIB_BASE, Modules, Namespaces...> { return with_libraries<VM::LIB_BASE>(); }
+  consteval auto with_api() const -> Interpreter<Libs | VM::LIB_API, Modules, Namespaces...> { return with_libraries<VM::LIB_API>(); }
+  consteval auto with_table() const -> Interpreter<Libs | VM::LIB_TABLE, Modules, Namespaces...> { return with_libraries<VM::LIB_TABLE>(); }
+  consteval auto with_math() const -> Interpreter<Libs | VM::LIB_MATH, Modules, Namespaces...> { return with_libraries<VM::LIB_MATH>(); }
+  consteval auto with_string() const -> Interpreter<Libs | VM::LIB_STRING, Modules, Namespaces...> { return with_libraries<VM::LIB_STRING>(); }
+  consteval auto with_utf8() const -> Interpreter<Libs | VM::LIB_UTF8, Modules, Namespaces...> { return with_libraries<VM::LIB_UTF8>(); }
+  consteval auto with_package() const -> Interpreter<Libs | VM::LIB_PACKAGE, Modules, Namespaces...> { return with_libraries<VM::LIB_PACKAGE>(); }
+  consteval auto with_all() const -> Interpreter<Libs | VM::LIB_ALL, Modules, Namespaces...> { return with_libraries<VM::LIB_ALL>(); }
 
   template <meta::info Ns>
-  consteval auto with_namespace() const -> Interpreter<Libs | VM::LIB_API, Namespaces..., Ns> { return {}; }
+  consteval auto with_namespace() const -> Interpreter<Libs | VM::LIB_API, Modules, Namespaces..., Ns> { return {}; }
+
+  template <fixed_string Name, fixed_string Source>
+  consteval auto with_module() const
+    -> Interpreter<Libs | VM::LIB_PACKAGE, typename ModuleListAppend<Modules, EmbeddedModuleSpec<Name, Source>>::type, Namespaces...> {
+    return {};
+  }
+
+  template <class... Specs>
+  static consteval void configure_modules(VM& vm, ModuleList<Specs...>) {
+    (vm.register_embedded_module(Specs::name.view(), Specs::source.view()), ...);
+  }
 
   static consteval void configure(VM& vm) {
     vm.init_runtime(Libs);
+    configure_modules(vm, Modules{});
     if constexpr (sizeof...(Namespaces) != 0) {
       static_assert((Libs & VM::LIB_API) != 0u, "Lua: interpreter namespace bindings require LIB_API");
       (vm.bind_namespace<Namespaces>(), ...);
@@ -1834,7 +1927,7 @@ struct Interpreter {
 
   template <fixed_string Script>
   static inline void print_buffer() {
-    constexpr RunCapture out = Interpreter<Libs, Namespaces...>{}.template run_capture<Script>();
+    constexpr RunCapture out = Interpreter<Libs, Modules, Namespaces...>{}.template run_capture<Script>();
     if (out.print_n) {
       std::cout.write(out.print.data(), static_cast<std::streamsize>(out.print_n));
     }
@@ -1876,6 +1969,7 @@ inline constexpr std::uint32_t LIB_TABLE= VM::LIB_TABLE;
 inline constexpr std::uint32_t LIB_MATH = VM::LIB_MATH;
 inline constexpr std::uint32_t LIB_STRING = VM::LIB_STRING;
 inline constexpr std::uint32_t LIB_UTF8 = VM::LIB_UTF8;
+inline constexpr std::uint32_t LIB_PACKAGE = VM::LIB_PACKAGE;
 inline constexpr std::uint32_t LIB_ALL  = VM::LIB_ALL;
 
 } // namespace ct_lua54

@@ -24,8 +24,11 @@ if type(pcall) ~= "function" then return 111 end
 if type(xpcall) ~= "function" then return 112 end
 if type(warn) ~= "function" then return 113 end
 if type(load) ~= "function" then return 114 end
+if type(require) ~= "function" then return 115 end
 if _G ~= _G._G then return 115 end
 if _VERSION ~= "Lua 5.4" then return 116 end
+if type(package) ~= "table" then return 181 end
+if type(package.loaded) ~= "table" or type(package.preload) ~= "table" or type(package.searchers) ~= "table" then return 182 end
 
 do
   local y = 9
